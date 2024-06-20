@@ -141,6 +141,7 @@ lflow-cache-limit=1000
 lflow-cache-limit-kb=100000
 zone=global
 max-user-defined-networks=40000
+user-defined-network-ct-mark-base=3
 
 [kubernetes]
 kubeconfig=/path/to/kubeconfig
@@ -333,6 +334,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.SingleNode).To(gomega.BeFalse())
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeFalse())
 			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeFalse())
+			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(0)))
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(1))
 			gomega.Expect(OVNKubernetesFeature.EgressIPNodeHealthCheckPort).To(gomega.Equal(0))
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetwork).To(gomega.BeFalse())
@@ -786,6 +788,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.SingleNode).To(gomega.BeTrue())
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeTrue())
 			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeTrue())
+			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(6)))
 
 			gomega.Expect(HybridOverlay.Enabled).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(5))
@@ -877,6 +880,7 @@ var _ = Describe("Config Operations", func() {
 			"-cluster-manager-v4-transit-switch-subnet=100.90.0.0/16",
 			"-cluster-manager-v6-transit-switch-subnet=fd96::/64",
 			"-max-user-defined-networks=20000",
+			"-user-defined-network-ct-mark-base=6",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1290,6 +1294,7 @@ enable-pprof=true
 			gomega.Expect(Kubernetes.APIServer).To(gomega.Equal("https://4.4.3.2:8080"))
 			gomega.Expect(Kubernetes.RawNoHostSubnetNodes).To(gomega.Equal("label=another-test-label"))
 			gomega.Expect(Kubernetes.RawServiceCIDRs).To(gomega.Equal("172.15.0.0/24"))
+			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(7)))
 
 			gomega.Expect(OvnNorth.Scheme).To(gomega.Equal(OvnDBSchemeSSL))
 			gomega.Expect(OvnNorth.PrivKey).To(gomega.Equal("/client/privkey"))
@@ -1349,6 +1354,7 @@ enable-pprof=true
 			"-egressip-reachability-total-timeout=3",
 			"-egressip-node-healthcheck-port=12345",
 			"-max-user-defined-networks=5000",
+			"-user-defined-network-ct-mark-base=7",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

@@ -152,6 +152,7 @@ var (
 			V4OVNServiceHairpinMasqueradeIP: net.ParseIP("169.254.169.5"),
 			V6OVNServiceHairpinMasqueradeIP: net.ParseIP("fd69::5"),
 		},
+		UserDefinedNetworkConntrackMarkBase: 0,
 	}
 
 	// Set Leaderelection config values based on
@@ -466,6 +467,9 @@ type GatewayConfig struct {
 	DisableForwarding bool `gcfg:"disable-forwarding"`
 	// AllowNoUplink (disabled by default) controls if the external gateway bridge without an uplink port is allowed in local gateway mode.
 	AllowNoUplink bool `gcfg:"allow-no-uplink"`
+	// UserDefinedNetworkConntrackMarkBase will be the base to calculate the
+	// ct_mark for a user defined network, that's ct_mark=base+network-id
+	UserDefinedNetworkConntrackMarkBase uint `gcfg:"user-defined-network-ct-mark-base"`
 }
 
 // OvnAuthConfig holds client authentication and location details for
@@ -1426,6 +1430,12 @@ var OVNGatewayFlags = []cli.Flag{
 		Name:        "allow-no-uplink",
 		Usage:       "Allow the external gateway bridge without an uplink port in local gateway mode",
 		Destination: &cliConfig.Gateway.AllowNoUplink,
+	},
+	&cli.UintFlag{
+		Name:        "user-defined-network-ct-mark-base",
+		Usage:       "The base to calculate user defined network egress ct-mark based on the allocated network id",
+		Value:       Gateway.UserDefinedNetworkConntrackMarkBase,
+		Destination: &cliConfig.Gateway.UserDefinedNetworkConntrackMarkBase,
 	},
 	// Deprecated CLI options
 	&cli.BoolFlag{
