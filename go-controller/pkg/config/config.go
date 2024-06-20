@@ -58,18 +58,19 @@ var (
 
 	// Default holds parsed config file parameters and command-line overrides
 	Default = DefaultConfig{
-		MTU:                   1400,
-		ConntrackZone:         64000,
-		EncapType:             "geneve",
-		EncapIP:               "",
-		EncapPort:             DefaultEncapPort,
-		InactivityProbe:       100000, // in Milliseconds
-		OpenFlowProbe:         180,    // in Seconds
-		OfctrlWaitBeforeClear: 0,      // in Milliseconds
-		MonitorAll:            true,
-		LFlowCacheEnable:      true,
-		RawClusterSubnets:     "10.128.0.0/14/23",
-		Zone:                  types.OvnDefaultZone,
+		MTU:                    1400,
+		ConntrackZone:          64000,
+		EncapType:              "geneve",
+		EncapIP:                "",
+		EncapPort:              DefaultEncapPort,
+		InactivityProbe:        100000, // in Milliseconds
+		OpenFlowProbe:          180,    // in Seconds
+		OfctrlWaitBeforeClear:  0,      // in Milliseconds
+		MonitorAll:             true,
+		LFlowCacheEnable:       true,
+		RawClusterSubnets:      "10.128.0.0/14/23",
+		Zone:                   types.OvnDefaultZone,
+		MaxUserDefinedNetworks: 30000,
 	}
 
 	// Logging holds logging-related parsed config file parameters and command-line overrides
@@ -274,6 +275,9 @@ type DefaultConfig struct {
 
 	// Zone name to which ovnkube-node/ovnkube-controller belongs to
 	Zone string `gcfg:"zone"`
+	// MaxUserDefinedNetworks is the value of max number
+	// of user defined network that users can configure
+	MaxUserDefinedNetworks uint `gcfg:"max-user-defined-networks"`
 }
 
 // LoggingConfig holds logging-related parsed config file parameters and command-line overrides
@@ -905,6 +909,12 @@ var CommonFlags = []cli.Flag{
 		Usage:       "zone name to which ovnkube-node/ovnkube-controller belongs to",
 		Value:       Default.Zone,
 		Destination: &cliConfig.Default.Zone,
+	},
+	&cli.UintFlag{
+		Name:        "max-user-defined-networks",
+		Usage:       "The maximun number of user defined network primary or secondary allowed",
+		Value:       Default.MaxUserDefinedNetworks,
+		Destination: &cliConfig.Default.MaxUserDefinedNetworks,
 	},
 }
 

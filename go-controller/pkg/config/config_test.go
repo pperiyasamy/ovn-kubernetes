@@ -140,6 +140,7 @@ cluster-subnets=10.132.0.0/14/23
 lflow-cache-limit=1000
 lflow-cache-limit-kb=100000
 zone=global
+max-user-defined-networks=40000
 
 [kubernetes]
 kubeconfig=/path/to/kubeconfig
@@ -291,6 +292,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Default.LFlowCacheLimit).To(gomega.Equal(uint(0)))
 			gomega.Expect(Default.LFlowCacheLimitKb).To(gomega.Equal(uint(0)))
 			gomega.Expect(Default.EnableUDPAggregation).To(gomega.BeFalse())
+			gomega.Expect(Default.MaxUserDefinedNetworks).To(gomega.Equal(uint(30000)))
 			gomega.Expect(Logging.File).To(gomega.Equal(""))
 			gomega.Expect(Logging.Level).To(gomega.Equal(5))
 			gomega.Expect(Monitoring.RawNetFlowTargets).To(gomega.Equal(""))
@@ -598,6 +600,7 @@ var _ = Describe("Config Operations", func() {
 			"enable-admin-network-policy=true",
 			"enable-persistent-ips=true",
 			"zone=foo",
+			"max-user-defined-networks=60000",
 		)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -612,6 +615,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Default.LFlowCacheEnable).To(gomega.BeTrue())
 			gomega.Expect(Default.LFlowCacheLimit).To(gomega.Equal(uint(1000)))
 			gomega.Expect(Default.LFlowCacheLimitKb).To(gomega.Equal(uint(100000)))
+			gomega.Expect(Default.MaxUserDefinedNetworks).To(gomega.Equal(uint(60000)))
 			gomega.Expect(Logging.File).To(gomega.Equal("/var/log/ovnkube.log"))
 			gomega.Expect(Logging.Level).To(gomega.Equal(5))
 			gomega.Expect(Logging.ACLLoggingRateLimit).To(gomega.Equal(20))
@@ -724,6 +728,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Default.LFlowCacheEnable).To(gomega.BeTrue())
 			gomega.Expect(Default.LFlowCacheLimit).To(gomega.Equal(uint(500)))
 			gomega.Expect(Default.LFlowCacheLimitKb).To(gomega.Equal(uint(50000)))
+			gomega.Expect(Default.MaxUserDefinedNetworks).To(gomega.Equal(uint(20000)))
 			gomega.Expect(Logging.File).To(gomega.Equal("/some/logfile"))
 			gomega.Expect(Logging.Level).To(gomega.Equal(3))
 			gomega.Expect(Logging.ACLLoggingRateLimit).To(gomega.Equal(30))
@@ -871,6 +876,7 @@ var _ = Describe("Config Operations", func() {
 			"-dns-service-name=kube-dns-2",
 			"-cluster-manager-v4-transit-switch-subnet=100.90.0.0/16",
 			"-cluster-manager-v6-transit-switch-subnet=fd96::/64",
+			"-max-user-defined-networks=20000",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1262,6 +1268,7 @@ enable-pprof=true
 			gomega.Expect(Default.LFlowCacheEnable).To(gomega.BeTrue())
 			gomega.Expect(Default.LFlowCacheLimit).To(gomega.Equal(uint(500)))
 			gomega.Expect(Default.LFlowCacheLimitKb).To(gomega.Equal(uint(50000)))
+			gomega.Expect(Default.MaxUserDefinedNetworks).To(gomega.Equal(uint(5000)))
 			gomega.Expect(Logging.File).To(gomega.Equal("/some/logfile"))
 			gomega.Expect(Logging.Level).To(gomega.Equal(3))
 			gomega.Expect(Monitoring.RawNetFlowTargets).To(gomega.Equal("2.2.2.2:2055"))
@@ -1341,6 +1348,7 @@ enable-pprof=true
 			"-sb-cert-common-name=testsbcommonname",
 			"-egressip-reachability-total-timeout=3",
 			"-egressip-node-healthcheck-port=12345",
+			"-max-user-defined-networks=5000",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
