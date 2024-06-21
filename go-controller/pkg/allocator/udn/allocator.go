@@ -3,6 +3,7 @@ package udn
 import (
 	"fmt"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -17,6 +18,14 @@ func New(watchFactory factory.NodeWatchFactory, nodeName string) *Allocator {
 		watchFactory: watchFactory,
 		nodeName:     nodeName,
 	}
+}
+
+func (a *Allocator) AllocateConntrackMark(networkName string) (uint, error) {
+	return a.calculateIDsFromNetwork("ct-mark", networkName, config.Gateway.UserDefinedNetworkConntrackMarkBase, config.Default.MaxUserDefinedNetworks, 1)
+}
+
+func (a *Allocator) AllocateVRFTable(networkName string) (uint, error) {
+	return a.calculateIDsFromNetwork("vrf-table", networkName, config.Gateway.UserDefinedNetworkVRFTableBase, config.Default.MaxUserDefinedNetworks, 1)
 }
 
 func (a *Allocator) calculateIDsFromNetwork(idName, networkName string, base, limit, cardinality uint) (uint, error) {
