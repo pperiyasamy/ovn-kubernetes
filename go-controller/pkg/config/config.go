@@ -154,6 +154,7 @@ var (
 		},
 		UserDefinedNetworkConntrackMarkBase: 0,
 		UserDefinedNetworkVRFTableBase:      2,
+		UserDefinedNetworkMasqueradeIPBase:  10,
 	}
 
 	// Set Leaderelection config values based on
@@ -447,9 +448,11 @@ type GatewayConfig struct {
 	V4JoinSubnet string `gcfg:"v4-join-subnet"`
 	// V6JoinSubnet to be used in the cluster
 	V6JoinSubnet string `gcfg:"v6-join-subnet"`
-	// V4MasqueradeSubnet to be used in the cluster
+	// V4MasqueradeSubnet to be used in the cluster has to be bigger than
+	// MaxUserDefinedNetworks * 2 + 5
 	V4MasqueradeSubnet string `gcfg:"v4-masquerade-subnet"`
-	// V6MasqueradeSubnet to be used in the cluster
+	// V6MasqueradeSubnet to be used in the cluster has to be bigger than
+	// MaxUserDefinedNetworks * 2 + 5
 	V6MasqueradeSubnet string `gcfg:"v6-masquerade-subnet"`
 	// MasqueradeIps to be allocated from the masquerade subnets to enable host to service traffic
 	MasqueradeIPs MasqueradeIPsConfig
@@ -474,6 +477,9 @@ type GatewayConfig struct {
 	// UserDefinedNetworkVRFTableBase will be the base to calculate the
 	// vrf table id for a user defined network, that's table=base+network-id
 	UserDefinedNetworkVRFTableBase uint `gcfg:"user-defined-network-vrf-table-base"`
+	//UserDefinedNetworkMasqueradeIPBase is an unexposed config with value 10
+	// wich is the biggest default masquerade IP
+	UserDefinedNetworkMasqueradeIPBase uint
 }
 
 // OvnAuthConfig holds client authentication and location details for
