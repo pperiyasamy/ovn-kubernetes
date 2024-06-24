@@ -33,6 +33,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/linkmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/ovspinning"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/routemanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/apbroute"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -1122,6 +1123,12 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	}
 
 	linkManager.Run(nc.stopChan, nc.wg)
+
+	if config.Gateway.Mode == config.GatewayModeLocal {
+		// create vrf and route manager for local gateway configuration.
+		vfrManager := vrfmanager.NewController()
+		vfrManager.Run(nc.stopChan, nc.wg)
+	}
 
 	nc.wg.Add(1)
 	go func() {

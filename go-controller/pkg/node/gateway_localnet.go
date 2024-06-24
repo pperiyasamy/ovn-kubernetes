@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 
+	udnallocator "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
@@ -147,6 +148,8 @@ func newLocalGateway(nodeName string, hostSubnets []*net.IPNet, gwNextHops []net
 		return nil
 	}
 	gw.watchFactory = watchFactory.(*factory.WatchFactory)
+
+	gw.udnAllocator = udnallocator.New(watchFactory, nodeName)
 	klog.Info("Local Gateway Creation Complete")
 	return gw, nil
 }
