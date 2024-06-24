@@ -895,3 +895,14 @@ func GetOVSPortPodInfo(hostIfName string) (bool, string, string, error) {
 	}
 	return true, sandbox, nadName, nil
 }
+
+// GetLogicalRouterSNATConntrackZone gets the ct-zone-[router]_snat field from
+// logical router external_ids, usually needed to discover what ct zones
+// the ovn-controller choose
+func GetLogicalRouterSNATConntrackZone(logicalRouterName string) (string, error) {
+	stdout, stderr, err := RunOVSVsctl("get", "bridge", "br-int", fmt.Sprintf("external_ids:ct-zone-%s_snat", logicalRouterName))
+	if err != nil {
+		return "", fmt.Errorf("%s: failed geting SNAT conntrack zone for logical router %s: %s: %w", string(stdout), logicalRouterName, string(stderr), err)
+	}
+	return stdout, nil
+}
