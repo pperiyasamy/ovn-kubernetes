@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	udnallocator "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
@@ -45,6 +46,7 @@ type gateway struct {
 	nodePortWatcher informer.ServiceAndEndpointsEventHandler
 	openflowManager *openflowManager
 	nodeIPManager   *addressManager
+	udnAllocator    *udnallocator.Allocator
 	initFunc        func() error
 	readyFunc       func() (bool, error)
 
