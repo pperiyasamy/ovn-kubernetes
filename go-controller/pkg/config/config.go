@@ -153,6 +153,7 @@ var (
 			V6OVNServiceHairpinMasqueradeIP: net.ParseIP("fd69::5"),
 		},
 		UserDefinedNetworkConntrackMarkBase: 0,
+		UserDefinedNetworkVRFTableBase:      2,
 	}
 
 	// Set Leaderelection config values based on
@@ -470,6 +471,9 @@ type GatewayConfig struct {
 	// UserDefinedNetworkConntrackMarkBase will be the base to calculate the
 	// ct_mark for a user defined network, that's ct_mark=base+network-id
 	UserDefinedNetworkConntrackMarkBase uint `gcfg:"user-defined-network-ct-mark-base"`
+	// UserDefinedNetworkVRFTableBase will be the base to calculate the
+	// vrf table id for a user defined network, that's table=base+network-id
+	UserDefinedNetworkVRFTableBase uint `gcfg:"user-defined-network-vrf-table-base"`
 }
 
 // OvnAuthConfig holds client authentication and location details for
@@ -1436,6 +1440,12 @@ var OVNGatewayFlags = []cli.Flag{
 		Usage:       "The base to calculate user defined network egress ct-mark based on the allocated network id",
 		Value:       Gateway.UserDefinedNetworkConntrackMarkBase,
 		Destination: &cliConfig.Gateway.UserDefinedNetworkConntrackMarkBase,
+	},
+	&cli.UintFlag{
+		Name:        "user-defined-network-vrf-table-base",
+		Usage:       "The base to calculate user defined network local gateway egress vrf table id based on the allocated network id",
+		Value:       Gateway.UserDefinedNetworkVRFTableBase,
+		Destination: &cliConfig.Gateway.UserDefinedNetworkVRFTableBase,
 	},
 	// Deprecated CLI options
 	&cli.BoolFlag{

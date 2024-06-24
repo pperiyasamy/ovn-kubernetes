@@ -142,6 +142,7 @@ lflow-cache-limit-kb=100000
 zone=global
 max-user-defined-networks=40000
 user-defined-network-ct-mark-base=3
+user-defined-network-vrf-table-base=4
 
 [kubernetes]
 kubeconfig=/path/to/kubeconfig
@@ -335,6 +336,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeFalse())
 			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeFalse())
 			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(0)))
+			gomega.Expect(Gateway.UserDefinedNetworkVRFTableBase).To(gomega.Equal(uint(2)))
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(1))
 			gomega.Expect(OVNKubernetesFeature.EgressIPNodeHealthCheckPort).To(gomega.Equal(0))
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetwork).To(gomega.BeFalse())
@@ -789,6 +791,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeTrue())
 			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeTrue())
 			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(6)))
+			gomega.Expect(Gateway.UserDefinedNetworkVRFTableBase).To(gomega.Equal(uint(9)))
 
 			gomega.Expect(HybridOverlay.Enabled).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(5))
@@ -881,6 +884,7 @@ var _ = Describe("Config Operations", func() {
 			"-cluster-manager-v6-transit-switch-subnet=fd96::/64",
 			"-max-user-defined-networks=20000",
 			"-user-defined-network-ct-mark-base=6",
+			"-user-defined-network-vrf-table-base=9",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1295,6 +1299,7 @@ enable-pprof=true
 			gomega.Expect(Kubernetes.RawNoHostSubnetNodes).To(gomega.Equal("label=another-test-label"))
 			gomega.Expect(Kubernetes.RawServiceCIDRs).To(gomega.Equal("172.15.0.0/24"))
 			gomega.Expect(Gateway.UserDefinedNetworkConntrackMarkBase).To(gomega.Equal(uint(7)))
+			gomega.Expect(Gateway.UserDefinedNetworkVRFTableBase).To(gomega.Equal(uint(10)))
 
 			gomega.Expect(OvnNorth.Scheme).To(gomega.Equal(OvnDBSchemeSSL))
 			gomega.Expect(OvnNorth.PrivKey).To(gomega.Equal("/client/privkey"))
@@ -1355,6 +1360,7 @@ enable-pprof=true
 			"-egressip-node-healthcheck-port=12345",
 			"-max-user-defined-networks=5000",
 			"-user-defined-network-ct-mark-base=7",
+			"-user-defined-network-vrf-table-base=10",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
