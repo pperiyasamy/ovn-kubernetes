@@ -2,6 +2,7 @@ package udn
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -26,6 +27,39 @@ func (a *Allocator) AllocateConntrackMark(networkName string) (uint, error) {
 
 func (a *Allocator) AllocateVRFTable(networkName string) (uint, error) {
 	return a.calculateIDsFromNetwork("vrf-table", networkName, config.Gateway.UserDefinedNetworkVRFTableBase, config.Default.MaxUserDefinedNetworks, 1)
+}
+
+func (a *Allocator) AllocateV4MasqueradeIPs(networkName string) ([]net.IP, error) {
+	return a.allocateMasqueradeIPs(networkName, "v4", config.Gateway.V4MasqueradeSubnet)
+}
+
+func (a *Allocator) AllocateV6MasqueradeIPs(networkName string) ([]net.IP, error) {
+	return a.allocateMasqueradeIPs(networkName, "v6", config.Gateway.V6MasqueradeSubnet)
+}
+
+func (a *Allocator) allocateMasqueradeIPs(networkName, idPrefix, masqueradeSubnet string) ([]net.IP, error) {
+	numberOfIPs := uint(2)
+	firstID, err := a.calculateIDsFromNetwork(idPrefix+"-masquerade-subnets", networkName, config.Gateway.UserDefinedNetworkMasqueradeIPBase, config.Default.MaxUserDefinedNetworks*numberOfIPs, numberOfIPs)
+	if err != nil {
+		return nil, err
+	}
+	ip, ipMask, err := net.ParseCIDR(masqueradeSubnet)
+	if err != nil {
+		return nil, err
+	}
+
+	masqueradeIPs := []net.IP{}
+	for i := uint(0); i < numberOfIPs; i++ {
+		nextIP := util.NextIP(ip, int64(firstID+i))
+		if ip == nil {
+			return nil, fmt.Errorf("failed incrementing ip %s by '%d'", ip.String(), firstID+i)
+		}
+		if !ipMask.Contains(nextIP) {
+			return nil, fmt.Errorf("failed calculating user defined network %s masquerade IPs: ip %s out of bound for subnet %s", idPrefix, nextIP, ipMask)
+		}
+		masqueradeIPs = append(masqueradeIPs, nextIP)
+	}
+	return masqueradeIPs, nil
 }
 
 func (a *Allocator) calculateIDsFromNetwork(idName, networkName string, base, limit, cardinality uint) (uint, error) {

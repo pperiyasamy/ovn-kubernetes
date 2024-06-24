@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -323,4 +324,44 @@ func IPNetsIPToStringSlice(ips []*net.IPNet) []string {
 		ipAddrs = append(ipAddrs, ip.IP.String())
 	}
 	return ipAddrs
+}
+
+// NextIP returns IP incremented by 'increment', if IP is invalid, return nil
+func NextIP(ip net.IP, increment int64) net.IP {
+	normalizedIP := normalizeIP(ip)
+	if normalizedIP == nil {
+		return nil
+	}
+
+	i := ipToInt(normalizedIP)
+	return intToIP(i.Add(i, big.NewInt(increment)), len(normalizedIP) == net.IPv6len)
+}
+
+// normalizeIP will normalize IP by family,
+// IPv4 : 4-byte form
+// IPv6 : 16-byte form
+// others : nil
+func normalizeIP(ip net.IP) net.IP {
+	if ipTo4 := ip.To4(); ipTo4 != nil {
+		return ipTo4
+	}
+	return ip.To16()
+}
+
+func ipToInt(ip net.IP) *big.Int {
+	return big.NewInt(0).SetBytes(ip)
+}
+
+func intToIP(i *big.Int, isIPv6 bool) net.IP {
+	intBytes := i.Bytes()
+
+	if len(intBytes) == net.IPv4len || len(intBytes) == net.IPv6len {
+		return intBytes
+	}
+
+	if isIPv6 {
+		return append(make([]byte, net.IPv6len-len(intBytes)), intBytes...)
+	}
+
+	return append(make([]byte, net.IPv4len-len(intBytes)), intBytes...)
 }
