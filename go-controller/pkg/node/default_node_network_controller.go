@@ -100,6 +100,7 @@ type DefaultNodeNetworkController struct {
 	// Node healthcheck server for cloud load balancers
 	healthzServer *proxierHealthUpdater
 	routeManager  *routemanager.Controller
+	vrfManager    *vrfmanager.Controller
 
 	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
 	retryNamespaces *retry.RetryFramework
@@ -111,7 +112,7 @@ type DefaultNodeNetworkController struct {
 
 func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, stopChan chan struct{},
 	wg *sync.WaitGroup) *DefaultNodeNetworkController {
-
+	routeManager := routemanager.NewController()
 	return &DefaultNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
@@ -119,7 +120,8 @@ func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, sto
 			stopChan:                        stopChan,
 			wg:                              wg,
 		},
-		routeManager: routemanager.NewController(),
+		routeManager: routeManager,
+		vrfManager:   vrfmanager.NewController(routeManager),
 	}
 }
 
@@ -705,6 +707,12 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 		nc.routeManager.Run(nc.stopChan, 4*time.Minute)
 	}()
 
+	nc.wg.Add(1)
+	go func() {
+		defer nc.wg.Done()
+		nc.vrfManager.Run(nc.stopChan, nc.wg)
+	}()
+
 	// Bootstrap flows in OVS if just normal flow is present
 	if err := bootstrapOVSFlows(); err != nil {
 		return fmt.Errorf("failed to bootstrap OVS flows: %w", err)
@@ -1123,12 +1131,6 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	}
 
 	linkManager.Run(nc.stopChan, nc.wg)
-
-	if config.Gateway.Mode == config.GatewayModeLocal {
-		// create vrf and route manager for local gateway configuration.
-		vfrManager := vrfmanager.NewController()
-		vfrManager.Run(nc.stopChan, nc.wg)
-	}
 
 	nc.wg.Add(1)
 	go func() {
