@@ -11,6 +11,9 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iprulemanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iptables"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -47,6 +50,9 @@ type gateway struct {
 	openflowManager *openflowManager
 	nodeIPManager   *addressManager
 	udnAllocator    *udnallocator.Allocator
+	vrfManager      *vrfmanager.Controller
+	ruleManager     *iprulemanager.Controller
+	ipTablesManager *iptables.Controller
 	initFunc        func() error
 	readyFunc       func() (bool, error)
 
@@ -55,6 +61,12 @@ type gateway struct {
 	watchFactory *factory.WatchFactory // used for retry
 	stopChan     <-chan struct{}
 	wg           *sync.WaitGroup
+}
+
+func (g *gateway) AddNetwork(networkName string) {
+}
+
+func (g *gateway) DelNetwork(networkName string) {
 }
 
 func (g *gateway) AddService(svc *kapi.Service) error {

@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	udnallocator "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iprulemanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iptables"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/routemanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -150,6 +154,29 @@ func newLocalGateway(nodeName string, hostSubnets []*net.IPNet, gwNextHops []net
 	gw.watchFactory = watchFactory.(*factory.WatchFactory)
 
 	gw.udnAllocator = udnallocator.New(watchFactory, nodeName)
+
+	gw.vrfManager = vrfmanager.NewController(routeManager)
+	gw.ruleManager = iprulemanager.NewController(config.IPv4Mode, config.IPv6Mode)
+	gw.ipTablesManager = iptables.NewController()
+
+	gw.wg.Add(1)
+	go func() {
+		defer gw.wg.Done()
+		gw.vrfManager.Run(gw.stopChan, gw.wg)
+	}()
+
+	gw.wg.Add(1)
+	go func() {
+		defer gw.wg.Done()
+		gw.ruleManager.Run(gw.stopChan, 5*time.Minute)
+	}()
+
+	gw.wg.Add(1)
+	go func() {
+		defer gw.wg.Done()
+		gw.ipTablesManager.Run(gw.stopChan, 5*time.Minute)
+	}()
+
 	klog.Info("Local Gateway Creation Complete")
 	return gw, nil
 }

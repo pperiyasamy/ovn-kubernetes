@@ -33,7 +33,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/linkmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/ovspinning"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/routemanager"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/apbroute"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -100,7 +99,6 @@ type DefaultNodeNetworkController struct {
 	// Node healthcheck server for cloud load balancers
 	healthzServer *proxierHealthUpdater
 	routeManager  *routemanager.Controller
-	vrfManager    *vrfmanager.Controller
 
 	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
 	retryNamespaces *retry.RetryFramework
@@ -112,7 +110,6 @@ type DefaultNodeNetworkController struct {
 
 func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, stopChan chan struct{},
 	wg *sync.WaitGroup) *DefaultNodeNetworkController {
-	routeManager := routemanager.NewController()
 	return &DefaultNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
@@ -120,8 +117,7 @@ func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, sto
 			stopChan:                        stopChan,
 			wg:                              wg,
 		},
-		routeManager: routeManager,
-		vrfManager:   vrfmanager.NewController(routeManager),
+		routeManager: routemanager.NewController(),
 	}
 }
 
@@ -705,12 +701,6 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	go func() {
 		defer nc.wg.Done()
 		nc.routeManager.Run(nc.stopChan, 4*time.Minute)
-	}()
-
-	nc.wg.Add(1)
-	go func() {
-		defer nc.wg.Done()
-		nc.vrfManager.Run(nc.stopChan, nc.wg)
 	}()
 
 	// Bootstrap flows in OVS if just normal flow is present
