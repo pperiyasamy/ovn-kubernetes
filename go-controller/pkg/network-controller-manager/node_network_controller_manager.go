@@ -70,8 +70,9 @@ func NewNodeNetworkControllerManager(ovnClient *util.OVNClientset, wf factory.No
 	}
 
 	// need to configure OVS interfaces for Pods on secondary networks in the DPU mode
+	// need to start NAD controller on node side for programming gateway pieces for UDNs
 	var err error
-	if config.OVNKubernetesFeature.EnableMultiNetwork && config.OvnKubeNode.Mode == ovntypes.NodeModeDPU {
+	if config.OVNKubernetesFeature.EnableMultiNetwork && config.OvnKubeNode.Mode == ovntypes.NodeModeDPU || util.IsNetworkSegmentationSupportEnabled() {
 		ncm.nadController, err = nad.NewNetAttachDefinitionController("node-network-controller-manager", ncm, wf)
 	}
 	if err != nil {
