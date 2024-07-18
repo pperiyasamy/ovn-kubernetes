@@ -8,9 +8,11 @@ import (
 	"github.com/containernetworking/plugins/pkg/testutils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	kubeMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -41,15 +43,16 @@ func getDeletionFakeOVSCommands(fexec *ovntest.FakeExec, mgtPort string) {
 
 var _ = Describe("UserDefinedNetworkGateway", func() {
 	var (
-		netName             = "bluenet"
-		netID               = "3"
-		nodeName     string = "worker1"
-		mgtPortMAC   string = "00:00:00:55:66:77"
-		fexec        *ovntest.FakeExec
-		testNS       ns.NetNS
-		v4NodeSubnet = "10.128.0.0/24"
-		v6NodeSubnet = "ae70::66/112"
-		mgtPort      = fmt.Sprintf("%s%s", types.K8sMgmtIntfNamePrefix, netID)
+		netName                  = "bluenet"
+		netID                    = "3"
+		nodeName          string = "worker1"
+		mgtPortMAC        string = "00:00:00:55:66:77"
+		fexec             *ovntest.FakeExec
+		testNS            ns.NetNS
+		nodeAnnotatorMock *kubeMocks.Annotator
+		v4NodeSubnet      = "10.128.0.0/24"
+		v6NodeSubnet      = "ae70::66/112"
+		mgtPort           = fmt.Sprintf("%s%s", types.K8sMgmtIntfNamePrefix, netID)
 	)
 	BeforeEach(func() {
 		// Set up a fake vsctl command mock interface
@@ -65,6 +68,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			return nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+		nodeAnnotatorMock = &kubeMocks.Annotator{}
 	})
 	AfterEach(func() {
 		Expect(testNS.Close()).To(Succeed())
@@ -84,7 +88,9 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer3Topology, "100.128.0.0/16/24,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node)
+		nodeAnnotatorMock.On("Set", mock.Anything, map[string]string{netName: mgtPortMAC}).Return(nil)
+		nodeAnnotatorMock.On("Run").Return(nil)
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, nodeAnnotatorMock)
 		Expect(err).NotTo(HaveOccurred())
 		getCreationFakeOVSCommands(fexec, mgtPort, mgtPortMAC, netName, nodeName, netInfo.MTU())
 		err = testNS.Do(func(ns.NetNS) error {
@@ -110,7 +116,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer3Topology, "100.128.0.0/16/24,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node)
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, nil)
 		Expect(err).NotTo(HaveOccurred())
 		getDeletionFakeOVSCommands(fexec, mgtPort)
 		err = testNS.Do(func(ns.NetNS) error {
@@ -135,7 +141,9 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer2Topology, "100.128.0.0/16,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node)
+		nodeAnnotatorMock.On("Set", mock.Anything, map[string]string{netName: mgtPortMAC}).Return(nil)
+		nodeAnnotatorMock.On("Run").Return(nil)
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, nodeAnnotatorMock)
 		Expect(err).NotTo(HaveOccurred())
 		getCreationFakeOVSCommands(fexec, mgtPort, mgtPortMAC, netName, nodeName, netInfo.MTU())
 		err = testNS.Do(func(ns.NetNS) error {
@@ -160,7 +168,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer2Topology, "100.128.0.0/16,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node)
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, nil)
 		Expect(err).NotTo(HaveOccurred())
 		getDeletionFakeOVSCommands(fexec, mgtPort)
 		err = testNS.Do(func(ns.NetNS) error {

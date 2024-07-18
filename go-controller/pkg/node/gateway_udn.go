@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	v1 "k8s.io/api/core/v1"
@@ -23,14 +24,16 @@ type UserDefinedNetworkGateway struct {
 	// stores the networkID of this network
 	networkID int
 	// node that its programming things on
-	node *v1.Node
+	node          *v1.Node
+	nodeAnnotator kube.Annotator
 }
 
-func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node) *UserDefinedNetworkGateway {
+func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node, nodeAnnotator kube.Annotator) *UserDefinedNetworkGateway {
 	return &UserDefinedNetworkGateway{
-		NetInfo:   netInfo,
-		networkID: networkID,
-		node:      node,
+		NetInfo:       netInfo,
+		networkID:     networkID,
+		node:          node,
+		nodeAnnotator: nodeAnnotator,
 	}
 }
 
@@ -124,6 +127,14 @@ func (udng *UserDefinedNetworkGateway) addUDNManagementPort() error {
 			}
 		}
 	}
+
+	if err := util.UpdateNodeManagementPortMACAddresses(udng.node, udng.nodeAnnotator, macAddress, udng.GetNetworkName()); err != nil {
+		return err
+	}
+	if err := udng.nodeAnnotator.Run(); err != nil {
+		return fmt.Errorf("failed to set node %s annotations for network %s: %w", udng.node.Name, udng.GetNetworkName(), err)
+	}
+	klog.V(3).Infof("Added management port mac address information %s for network %s", interfaceName, udng.GetNetworkName())
 	return nil
 }
 

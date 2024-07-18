@@ -7,6 +7,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -59,7 +60,8 @@ func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		nc.gateway = NewUserDefinedNetworkGateway(nc.NetInfo, networkID, node)
+		nodeAnnotator := kube.NewNodeAnnotator(nc.Kube, nc.name)
+		nc.gateway = NewUserDefinedNetworkGateway(nc.NetInfo, networkID, node, nodeAnnotator)
 		if err := nc.gateway.AddNetwork(); err != nil {
 			return fmt.Errorf("failed to add network to node gateway for network %s at node %s: %w",
 				nc.GetNetworkName(), nc.name, err)
