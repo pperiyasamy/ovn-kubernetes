@@ -3,6 +3,7 @@ package node
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containernetworking/plugins/pkg/testutils"
@@ -16,6 +17,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	factoryMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory/mocks"
 	kubemocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	coreinformermocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/k8s.io/client-go/informers/core/v1"
 	v1mocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/k8s.io/client-go/listers/core/v1"
@@ -57,6 +59,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 		factoryMock  factoryMocks.NodeWatchFactory
 		kubeMock     kubemocks.Interface
 		nodeLister   v1mocks.NodeLister
+		vrf          *vrfmanager.Controller
 		v4NodeSubnet = "100.128.0.0/24"
 		v6NodeSubnet = "ae70::66/112"
 		mgtPort      = fmt.Sprintf("%s%s", types.K8sMgmtIntfNamePrefix, netID)
@@ -85,6 +88,20 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 		nodeLister = v1mocks.NodeLister{}
 		nodeInformer.On("Lister").Return(&nodeLister)
 		kubeMock = kubemocks.Interface{}
+		wg := &sync.WaitGroup{}
+		vrf = vrfmanager.NewController()
+		stopCh := make(chan struct{})
+		defer func() {
+			close(stopCh)
+			wg.Wait()
+		}()
+		wg.Add(1)
+		go testNS.Do(func(netNS ns.NetNS) error {
+			defer wg.Done()
+			defer GinkgoRecover()
+			vrf.Run(stopCh, wg)
+			return nil
+		})
 	})
 	AfterEach(func() {
 		Expect(testNS.Close()).To(Succeed())
@@ -105,7 +122,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer3Topology, "100.128.0.0/16/24,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock)
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock, vrf)
 		getCreationFakeOVSCommands(fexec, mgtPort, mgtPortMAC, netName, nodeName, netInfo.MTU())
 		nodeLister.On("Get", mock.AnythingOfType("string")).Return(node, nil)
 		factoryMock.On("GetNode", "worker1").Return(node, nil)
@@ -142,8 +159,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer3Topology, "100.128.0.0/16/24,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock)
-		Expect(err).NotTo(HaveOccurred())
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock, vrf)
 		getDeletionFakeOVSCommands(fexec, mgtPort)
 		nodeLister.On("Get", mock.AnythingOfType("string")).Return(node, nil)
 		factoryMock.On("GetNode", "worker1").Return(node, nil)
@@ -171,8 +187,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer2Topology, "100.128.0.0/16,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock)
-		Expect(err).NotTo(HaveOccurred())
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock, vrf)
 		getCreationFakeOVSCommands(fexec, mgtPort, mgtPortMAC, netName, nodeName, netInfo.MTU())
 		nodeLister.On("Get", mock.AnythingOfType("string")).Return(node, nil)
 		factoryMock.On("GetNode", "worker1").Return(node, nil)
@@ -208,8 +223,7 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			types.Layer2Topology, "100.128.0.0/16,ae70::66/60", types.NetworkRolePrimary)
 		netInfo, err := util.ParseNADInfo(nad)
 		Expect(err).NotTo(HaveOccurred())
-		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock)
-		Expect(err).NotTo(HaveOccurred())
+		udnGateway := NewUserDefinedNetworkGateway(netInfo, 3, node, factoryMock.NodeCoreInformer().Lister(), &kubeMock, vrf)
 		getDeletionFakeOVSCommands(fexec, mgtPort)
 		nodeLister.On("Get", mock.AnythingOfType("string")).Return(node, nil)
 		factoryMock.On("GetNode", "worker1").Return(node, nil)

@@ -12,6 +12,9 @@ const (
 	// K8sMgmtIntfNamePrefix name to be used as an OVS internal port on the node as prefix for networs
 	K8sMgmtIntfNamePrefix = "ovn-k8s-mp"
 
+	// VrfDeviceSuffix vrf device suffix associated with every user defined primary network.
+	VrfDeviceSuffix = "-vrf"
+
 	// K8sMgmtIntfName name to be used as an OVS internal port on the node
 	K8sMgmtIntfName = K8sMgmtIntfNamePrefix + "0"
 

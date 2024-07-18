@@ -12,8 +12,14 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+)
+
+const (
+	// VrfDeviceSuffix vrf device suffix associated with every user defined primary network.
+	VrfDeviceSuffix = "-vrf"
 )
 
 // UserDefinedNetworkGateway contains information
@@ -29,27 +35,57 @@ type UserDefinedNetworkGateway struct {
 	node          *v1.Node
 	nodeLister    listers.NodeLister
 	kubeInterface kube.Interface
+	// vrf manager that creates and manages vrfs for all UDNs
+	// used with a lock since its shared between all network controllers
+	vrfManager *vrfmanager.Controller
 }
 
-func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node, nodeLister listers.NodeLister, kubeInterface kube.Interface) *UserDefinedNetworkGateway {
+func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node, nodeLister listers.NodeLister,
+	kubeInterface kube.Interface, vrfManager *vrfmanager.Controller) *UserDefinedNetworkGateway {
 	return &UserDefinedNetworkGateway{
 		NetInfo:       netInfo,
 		networkID:     networkID,
 		node:          node,
 		nodeLister:    nodeLister,
 		kubeInterface: kubeInterface,
+		vrfManager:    vrfManager,
 	}
+}
+
+func GetVrfDeviceNameForUDN(managementPortName string) string {
+	return managementPortName[8:] + VrfDeviceSuffix
 }
 
 // AddNetwork will be responsible to create all plumbings
 // required by this UDN on the gateway side
 func (udng *UserDefinedNetworkGateway) AddNetwork() error {
-	return udng.addUDNManagementPort()
+	err := udng.addUDNManagementPort()
+	if err != nil {
+		return fmt.Errorf("could not create management port netdevice for network %s: %w", udng.GetNetworkName(), err)
+	}
+	mgmtPortName := util.GetNetworkScopedK8sMgmtHostIntfName(uint(udng.networkID))
+	vrfDeviceName := GetVrfDeviceNameForUDN(mgmtPortName)
+	mplink, err := util.GetNetLinkOps().LinkByName(mgmtPortName)
+	if err != nil {
+		return fmt.Errorf("could not fetch link %s for network %s, err: %v", mgmtPortName, udng.GetNetworkName(), err)
+	}
+	vrfTableId := util.CalculateRouteTableID(mplink.Attrs().Index)
+	err = udng.vrfManager.AddVrf(vrfDeviceName, mgmtPortName, uint32(vrfTableId))
+	if err != nil {
+		return fmt.Errorf("could not add VRF %d for network %s, err: %v", vrfTableId, udng.GetNetworkName(), err)
+	}
+	return nil
 }
 
 // DelNetwork will be responsible to remove all plumbings
 // used by this UDN on the gateway side
 func (udng *UserDefinedNetworkGateway) DelNetwork() error {
+	mgmtPortName := util.GetNetworkScopedK8sMgmtHostIntfName(uint(udng.networkID))
+	vrfDeviceName := GetVrfDeviceNameForUDN(mgmtPortName)
+	err := udng.vrfManager.DeleteVrf(vrfDeviceName)
+	if err != nil {
+		return err
+	}
 	return udng.deleteUDNManagementPort()
 }
 
