@@ -401,6 +401,7 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 					nbClient:           cnci.nbClient,
 					watchFactory:       cnci.watchFactory,
 					nodeZoneState:      syncmap.NewSyncMap[bool](),
+					controllerName:     getNetworkControllerName(netInfo.GetNetworkName()),
 				},
 			},
 		},
