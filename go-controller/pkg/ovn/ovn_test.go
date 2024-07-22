@@ -40,6 +40,7 @@ import (
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/record"
@@ -116,6 +117,7 @@ func (o *FakeOVN) start(objects ...runtime.Object) {
 	apbExternalRouteObjects := []runtime.Object{}
 	anpObjects := []runtime.Object{}
 	v1Objects := []runtime.Object{}
+	nadObjects := []runtime.Object{}
 	nads := []nettypes.NetworkAttachmentDefinition{}
 	for _, object := range objects {
 		switch o := object.(type) {
@@ -133,6 +135,7 @@ func (o *FakeOVN) start(objects ...runtime.Object) {
 			egressServiceObjects = append(egressServiceObjects, object)
 		case *nettypes.NetworkAttachmentDefinitionList:
 			nads = append(nads, o.Items...)
+			nadObjects = append(nadObjects, object)
 		case *adminpolicybasedrouteapi.AdminPolicyBasedExternalRouteList:
 			apbExternalRouteObjects = append(apbExternalRouteObjects, object)
 		case *anpapi.AdminNetworkPolicyList:
@@ -152,8 +155,17 @@ func (o *FakeOVN) start(objects ...runtime.Object) {
 		EgressServiceClient:      egressservicefake.NewSimpleClientset(egressServiceObjects...),
 		AdminPolicyRouteClient:   adminpolicybasedroutefake.NewSimpleClientset(apbExternalRouteObjects...),
 		IPAMClaimsClient:         fakeipamclaimclient.NewSimpleClientset(),
-		NetworkAttchDefClient:    fakenadclient.NewSimpleClientset(),
+		NetworkAttchDefClient:    fakenadclient.NewSimpleClientset(nadObjects...),
 	}
+	// HACK - NAD client broke
+	for _, nad := range nads {
+		nadCopy := nad.DeepCopy()
+		_, err = o.fakeClient.NetworkAttchDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(nad.Namespace).Create(context.TODO(), nadCopy, metav1.CreateOptions{})
+		if err != nil {
+			panic("failed to create NAD")
+		}
+	}
+	// End Hack
 	o.init(nads)
 }
 
