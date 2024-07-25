@@ -3,8 +3,12 @@ package networkControllerManager
 import (
 	"fmt"
 
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/containernetworking/plugins/pkg/testutils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	factoryMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -162,6 +166,61 @@ var _ = Describe("Healthcheck tests", func() {
 				ncm.checkForStaleOVSRepresentorInterfaces()
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc)
 			})
+		})
+
+	})
+
+	Context("verify cleanup of deleted networks", func() {
+		var (
+			staleNetID uint   = 100
+			nodeName   string = "worker1"
+			testNS     ns.NetNS
+			fakeClient *util.OVNClientset
+		)
+
+		BeforeEach(func() {
+			testNS, err = testutils.NewNS()
+			Expect(err).NotTo(HaveOccurred())
+			v1Objects := []runtime.Object{}
+			fakeClient = &util.OVNClientset{
+				KubeClient: fake.NewSimpleClientset(v1Objects...),
+			}
+		})
+
+		AfterEach(func() {
+			Expect(testNS.Close()).To(Succeed())
+			Expect(testutils.UnmountNS(testNS)).To(Succeed())
+		})
+
+		It("check vrf devices are cleaned for deleted networks", func() {
+			config.OVNKubernetesFeature.EnableNetworkSegmentation = true
+			config.OVNKubernetesFeature.EnableMultiNetwork = true
+			wf, err := factory.NewOVNKubeControllerWatchFactory(util.GetOVNClientset().GetOVNKubeControllerClientset())
+			Expect(err).ToNot(HaveOccurred())
+
+			ncm, err := NewNodeNetworkControllerManager(fakeClient, wf, nodeName, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = wf.Start()
+			Expect(err).ToNot(HaveOccurred())
+			defer wf.Shutdown()
+
+			err = testNS.Do(func(ns.NetNS) error {
+				defer GinkgoRecover()
+
+				staleVrfDevice := util.GetVrfDeviceNameForUDN(util.GetNetworkScopedK8sMgmtHostIntfName(staleNetID))
+				ovntest.AddVrfLink(staleVrfDevice, uint32(staleNetID))
+				_, err = util.GetNetLinkOps().LinkByName(staleVrfDevice)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = ncm.CleanupDeletedNetworks()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = util.GetNetLinkOps().LinkByName(staleVrfDevice)
+				Expect(err).To(HaveOccurred())
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
