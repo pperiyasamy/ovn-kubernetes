@@ -49,6 +49,7 @@ import (
 )
 
 const (
+	rulePriorityForUDN  = 6001 // the priority of the ip routing rules created by the controller for user defined networks.
 	rulePriority        = 6000 // the priority of the ip routing rules created by the controller. Egress Service priority is 5000.
 	ruleFwMarkPriority  = 5999 // the priority of the ip routing rules for LGW mode when we want to skip processing eip ip rules because dst is a node ip. Pkt will be fw marked with 1008.
 	routingTableIDStart = 1000
@@ -71,6 +72,7 @@ type eIPConfig struct {
 	// EgressIP IP
 	addr   *netlink.Addr
 	routes []netlink.Route
+	ipRule *netlink.Rule
 }
 
 func newEIPConfig() *eIPConfig {
@@ -252,6 +254,9 @@ func (c *Controller) Run(stopCh <-chan struct{}, wg *sync.WaitGroup, threads int
 	// removed by relevant manager.
 	if err := c.ruleManager.OwnPriority(rulePriority); err != nil {
 		return fmt.Errorf("failed to own priority %d for IP rules: %v", rulePriority, err)
+	}
+	if err := c.ruleManager.OwnPriority(rulePriorityForUDN); err != nil {
+		return fmt.Errorf("failed to own priority %d for IP rules: %v", rulePriorityForUDN, err)
 	}
 	if c.v4 {
 		if err := c.iptablesManager.OwnChain(utiliptables.TableNAT, iptChainName, utiliptables.ProtocolIPv4); err != nil {
@@ -530,6 +535,8 @@ func (c *Controller) processEIP(eip *eipv1.EgressIP) (*eIPConfig, sets.Set[strin
 			fmt.Errorf("failed to determine egress IP config for node %s: %w", c.nodeName, err)
 	}
 	// max of 1 EIP IP is selected. Return when 1 is found.
+	var isSecondary bool
+	var mark util.EgressIPMark
 	for _, status := range eip.Status.Items {
 		if isValid := isEIPStatusItemValid(status, c.nodeName); !isValid {
 			continue
@@ -561,11 +568,12 @@ func (c *Controller) processEIP(eip *eipv1.EgressIP) (*eIPConfig, sets.Set[strin
 			if err != nil {
 				return nil, selectedNamespaces, selectedPods, selectedNamespacesPodIPs, fmt.Errorf("failed to get active network for namespace %s: %v", namespace.Name, err)
 			}
+			selectedNamespaces.Insert(namespace.Name)
 			if netInfo.IsSecondary() {
-				// EIP for secondary host interfaces is not supported for secondary networks
+				isSecondary = true
+				mark = util.GetEgressIPPktMark(eip.Name, eip.Annotations)
 				continue
 			}
-			selectedNamespaces.Insert(namespace.Name)
 			pods, err := c.listPodsByNamespaceAndSelector(namespace.Name, &eip.Spec.PodSelector)
 			if err != nil {
 				return nil, selectedNamespaces, selectedPods, selectedNamespacesPodIPs, fmt.Errorf("failed to list pods in namespace %s: %w",
@@ -593,11 +601,18 @@ func (c *Controller) processEIP(eip *eipv1.EgressIP) (*eIPConfig, sets.Set[strin
 			}
 		}
 		// ensure at least one pod is selected before generating config
-		if len(selectedNamespacesPodIPs) > 0 {
+		if len(selectedNamespacesPodIPs) > 0 || isSecondary {
 			eipSpecificConfig, err = generateEIPConfig(link, eIPNet, isEIPV6)
 			if err != nil {
 				return nil, selectedNamespaces, selectedPods, selectedNamespacesPodIPs,
 					fmt.Errorf("failed to generate EIP configuration for EgressIP %s IP %s: %v", eip.Name, status.EgressIP, err)
+			}
+			if isSecondary {
+				if !mark.IsAvailable() {
+					return nil, selectedNamespaces, selectedPods, selectedNamespacesPodIPs,
+						fmt.Errorf("egressIP %s object must contain a mark for user defined networks", eip.Name)
+				}
+				eipSpecificConfig = updateEIPConfigForUDN(eipSpecificConfig, link, mark)
 			}
 		}
 		break
@@ -632,6 +647,11 @@ func generateEIPConfig(link netlink.Link, eIPNet *net.IPNet, isEIPV6 bool) (*eIP
 	eipConfig.routes = linkRoutes
 	eipConfig.addr = getNetlinkAddress(eIPNet, link.Attrs().Index)
 	return eipConfig, nil
+}
+
+func updateEIPConfigForUDN(eipConfig *eIPConfig, link netlink.Link, mark util.EgressIPMark) *eIPConfig {
+	eipConfig.ipRule = generatePktMarkIPRule(link.Attrs().Index, mark.ToInt())
+	return eipConfig
 }
 
 func generateRoutesForLink(link netlink.Link, isV6 bool) ([]netlink.Route, error) {
@@ -716,6 +736,10 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 		if err := c.deleteIPFromAnnotation(existing.eIPConfig.addr.IP.String()); err != nil {
 			return fmt.Errorf("failed to delete egress IP address %s from annotation: %v", existing.eIPConfig.addr.String(), err)
 		}
+		// delete stale ip rule belongs to old EIP.
+		if existing.eIPConfig.ipRule != nil {
+			c.ruleManager.Delete(*existing.eIPConfig.ipRule)
+		}
 	}
 	// delete stale routes
 	// existing routes need to be deleted if there's no update and if there's no other active egress IP on this link.
@@ -736,6 +760,9 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 			for _, routeToDelete := range existing.eIPConfig.routes {
 				c.routeManager.Del(routeToDelete)
 			}
+			if existing.eIPConfig.ipRule != nil {
+				c.ruleManager.Delete(*existing.eIPConfig.ipRule)
+			}
 		}
 	} else if update != nil && update.eIPConfig != nil && len(update.eIPConfig.routes) > 0 &&
 		existing.eIPConfig != nil && len(existing.eIPConfig.routes) > 0 {
@@ -743,6 +770,12 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 		routesToDelete := routeDifference(existing.eIPConfig.routes, update.eIPConfig.routes)
 		for _, routeToDelete := range routesToDelete {
 			c.routeManager.Del(routeToDelete)
+		}
+		if existing.eIPConfig.ipRule != nil {
+			c.ruleManager.Delete(*existing.eIPConfig.ipRule)
+		}
+		if update.eIPConfig.ipRule != nil {
+			c.ruleManager.Add(*update.eIPConfig.ipRule)
 		}
 	}
 	// apply new changes
@@ -780,7 +813,13 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 			c.routeManager.Add(routeToAdd)
 		}
 		existing.eIPConfig.routes = update.eIPConfig.routes
+
+		if update.eIPConfig.ipRule != nil {
+			c.ruleManager.Add(*update.eIPConfig.ipRule)
+		}
+		existing.eIPConfig.ipRule = update.eIPConfig.ipRule
 	}
+
 	return nil
 }
 
@@ -902,6 +941,16 @@ func (c *Controller) repairNode() error {
 	}
 	filter, mask := filterRuleByPriority(rulePriority)
 	existingRules, err := util.GetNetLinkOps().RuleListFiltered(netlink.FAMILY_ALL, filter, mask)
+	if err != nil {
+		return fmt.Errorf("failed to list IP rules: %v", err)
+	}
+	for _, existingRule := range existingRules {
+		ruleStr := existingRule.String()
+		assignedIPRules.Insert(ruleStr)
+		assignedIPRulesStrToRules[ruleStr] = existingRule
+	}
+	filter, mask = filterRuleByPriority(rulePriorityForUDN)
+	existingRules, err = util.GetNetLinkOps().RuleListFiltered(netlink.FAMILY_ALL, filter, mask)
 	if err != nil {
 		return fmt.Errorf("failed to list IP rules: %v", err)
 	}
@@ -1465,6 +1514,15 @@ func generateIPRule(srcIP net.IP, isIPv6 bool, ifIndex int) netlink.Rule {
 	}
 	_, ipNet, _ := net.ParseCIDR(ipFullMask)
 	r.Src = ipNet
+	return r
+}
+
+func generatePktMarkIPRule(ifIndex, mark int) *netlink.Rule {
+	r := netlink.NewRule()
+	r.Table = util.CalculateRouteTableID(ifIndex)
+	r.Priority = rulePriorityForUDN
+	r.Mark = mark
+
 	return r
 }
 

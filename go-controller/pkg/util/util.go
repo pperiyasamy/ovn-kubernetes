@@ -534,3 +534,15 @@ func GetDefaultEndpointSlicesEventHandler(handlerFuncs cache.ResourceEventHandle
 	}
 	return eventHandler
 }
+
+func GetEgressIPPktMark(eipName string, annotations map[string]string) EgressIPMark {
+	var err error
+	var mark EgressIPMark
+	if IsNetworkSegmentationSupportEnabled() && IsEgressIPMarkSet(annotations) {
+		mark, err = ParseEgressIPMark(annotations)
+		if err != nil {
+			klog.Errorf("Failed to get EgressIP %s packet mark from annotations: %v", eipName, err)
+		}
+	}
+	return mark
+}

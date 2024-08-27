@@ -246,7 +246,7 @@ func initController(namespaces []corev1.Namespace, pods []corev1.Pod, egressIPs 
 	}
 	linkManager := linkmanager.NewController(node1Name, v4, v6, nil)
 	c, err := NewController(&ovnkube.Kube{KClient: kubeClient}, watchFactory.EgressIPInformer(), watchFactory.NodeInformer(), watchFactory.NamespaceInformer(),
-		watchFactory.PodCoreInformer(), rm, v4, v6, node1Name, linkManager)
+		watchFactory.NADInformer(), watchFactory.PodCoreInformer(), rm, v4, v6, node1Name, linkManager)
 	if err != nil {
 		return nil, nil, err
 	}

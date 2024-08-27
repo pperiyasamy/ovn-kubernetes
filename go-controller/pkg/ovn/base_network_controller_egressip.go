@@ -167,7 +167,7 @@ func (bnc *BaseNetworkController) reconcileEgressIP(old, new *egressipv1.EgressI
 
 	var mark util.EgressIPMark
 	if new != nil && bnc.IsSecondary() {
-		mark = getEgressIPPktMark(new.Name, new.Annotations)
+		mark = util.GetEgressIPPktMark(new.Name, new.Annotations)
 	}
 
 	// CASE 2: EIP object addition, we need to setup database configuration for all the statuses
@@ -445,7 +445,7 @@ func (bnc *BaseNetworkController) reconcileEgressIPNamespace(old, new *v1.Namesp
 		}
 		var mark util.EgressIPMark
 		if bnc.IsSecondary() {
-			mark = getEgressIPPktMark(egressIP.Name, egressIP.Annotations)
+			mark = util.GetEgressIPPktMark(egressIP.Name, egressIP.Annotations)
 		}
 		if !namespaceSelector.Matches(oldLabels) && namespaceSelector.Matches(newLabels) {
 			if err := bnc.addNamespaceEgressIPAssignments(egressIP.Name, egressIP.Status.Items, mark, newNamespace, egressIP.Spec.PodSelector); err != nil {
@@ -524,7 +524,7 @@ func (bnc *BaseNetworkController) reconcileEgressIPPod(old, new *v1.Pod) (err er
 		if namespaceSelector.Matches(namespaceLabels) {
 			var mark util.EgressIPMark
 			if bnc.IsSecondary() {
-				mark = getEgressIPPktMark(egressIP.Name, egressIP.Annotations)
+				mark = util.GetEgressIPPktMark(egressIP.Name, egressIP.Annotations)
 			}
 			// If the namespace the pod belongs to matches this object then
 			// check the if there's a podSelector defined on the EgressIP
@@ -1884,7 +1884,7 @@ func (bnc *BaseNetworkController) addStandByEgressIPAssignment(podKey string, po
 		}
 		eipToAssign = eipName // use the first EIP we find successfully
 		if bnc.IsSecondary() {
-			mark = getEgressIPPktMark(eip.Name, eip.Annotations)
+			mark = util.GetEgressIPPktMark(eip.Name, eip.Annotations)
 		}
 		break
 	}
@@ -2878,18 +2878,6 @@ func getFirstNonNilNamespace(n1, n2 *v1.Namespace) *v1.Namespace {
 
 func addPktMarkToLRPOptions(options map[string]string, mark string) {
 	options["pkt_mark"] = mark
-}
-
-func getEgressIPPktMark(eipName string, annotations map[string]string) util.EgressIPMark {
-	var err error
-	var mark util.EgressIPMark
-	if util.IsNetworkSegmentationSupportEnabled() && util.IsEgressIPMarkSet(annotations) {
-		mark, err = util.ParseEgressIPMark(annotations)
-		if err != nil {
-			klog.Errorf("Failed to get EgressIP %s packet mark from annotations: %v", eipName, err)
-		}
-	}
-	return mark
 }
 
 func getPodIPFromEIPSNATMarkMatch(match string) string {
