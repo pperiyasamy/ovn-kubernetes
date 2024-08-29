@@ -72,7 +72,11 @@ type eIPConfig struct {
 	// EgressIP IP
 	addr   *netlink.Addr
 	routes []netlink.Route
-	ipRule *netlink.Rule
+	v6     bool
+	// The ipRule and ipTableRule are populated when EIP is configured on the namespace which is served by user defined
+	// networks.
+	ipRule      *netlink.Rule
+	ipTableRule *iptables.RuleArg
 }
 
 func newEIPConfig() *eIPConfig {
@@ -646,11 +650,13 @@ func generateEIPConfig(link netlink.Link, eIPNet *net.IPNet, isEIPV6 bool) (*eIP
 	}
 	eipConfig.routes = linkRoutes
 	eipConfig.addr = getNetlinkAddress(eIPNet, link.Attrs().Index)
+	eipConfig.v6 = isEIPV6
 	return eipConfig, nil
 }
 
 func updateEIPConfigForUDN(eipConfig *eIPConfig, link netlink.Link, mark util.EgressIPMark) *eIPConfig {
 	eipConfig.ipRule = generatePktMarkIPRule(link.Attrs().Index, mark.ToInt())
+	eipConfig.ipTableRule = generateEIPPktMarkIPTablesSNATRuleArg(mark.ToInt(), link.Attrs().Name, eipConfig.addr.IP.String())
 	return eipConfig
 }
 
@@ -736,9 +742,12 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 		if err := c.deleteIPFromAnnotation(existing.eIPConfig.addr.IP.String()); err != nil {
 			return fmt.Errorf("failed to delete egress IP address %s from annotation: %v", existing.eIPConfig.addr.String(), err)
 		}
-		// delete stale ip rule belongs to old EIP.
+		// delete stale ip rule and iptables snat rule belongs to old EIP.
 		if existing.eIPConfig.ipRule != nil {
 			c.ruleManager.Delete(*existing.eIPConfig.ipRule)
+		}
+		if err := c.deleteEIPPktMarkIPTablesSNATRule(existing.eIPConfig); err != nil {
+			return err
 		}
 	}
 	// delete stale routes
@@ -763,6 +772,9 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 			if existing.eIPConfig.ipRule != nil {
 				c.ruleManager.Delete(*existing.eIPConfig.ipRule)
 			}
+			if err := c.deleteEIPPktMarkIPTablesSNATRule(existing.eIPConfig); err != nil {
+				return err
+			}
 		}
 	} else if update != nil && update.eIPConfig != nil && len(update.eIPConfig.routes) > 0 &&
 		existing.eIPConfig != nil && len(existing.eIPConfig.routes) > 0 {
@@ -776,6 +788,12 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 		}
 		if update.eIPConfig.ipRule != nil {
 			c.ruleManager.Add(*update.eIPConfig.ipRule)
+		}
+		if err := c.deleteEIPPktMarkIPTablesSNATRule(existing.eIPConfig); err != nil {
+			return err
+		}
+		if err := c.addEIPPktMarkIPTablesSNATRule(update.eIPConfig); err != nil {
+			return err
 		}
 	}
 	// apply new changes
@@ -817,9 +835,49 @@ func (c *Controller) updateEIP(existing *state, update *config) error {
 		if update.eIPConfig.ipRule != nil {
 			c.ruleManager.Add(*update.eIPConfig.ipRule)
 		}
+		if err := c.addEIPPktMarkIPTablesSNATRule(update.eIPConfig); err != nil {
+			return err
+		}
+
 		existing.eIPConfig.ipRule = update.eIPConfig.ipRule
 	}
 
+	return nil
+}
+
+func (c *Controller) deleteEIPPktMarkIPTablesSNATRule(eIPConfig *eIPConfig) error {
+	if eIPConfig == nil || eIPConfig.ipTableRule == nil {
+		return nil
+	}
+	if eIPConfig.v6 {
+		if err := c.iptablesManager.DeleteRule(utiliptables.TableNAT, iptChainName, utiliptables.ProtocolIPv6,
+			*eIPConfig.ipTableRule); err != nil {
+			return fmt.Errorf("unable to delete EgressIP pkt mark iptables rule: %v", err)
+		}
+	} else {
+		if err := c.iptablesManager.DeleteRule(utiliptables.TableNAT, iptChainName, utiliptables.ProtocolIPv4,
+			*eIPConfig.ipTableRule); err != nil {
+			return fmt.Errorf("unable to delete EgressIP pkt mark iptables rule: %v", err)
+		}
+	}
+	return nil
+}
+
+func (c *Controller) addEIPPktMarkIPTablesSNATRule(eIPConfig *eIPConfig) error {
+	if eIPConfig == nil || eIPConfig.ipTableRule == nil {
+		return nil
+	}
+	if eIPConfig.v6 {
+		if err := c.iptablesManager.EnsureRule(utiliptables.TableNAT, iptChainName, utiliptables.ProtocolIPv6,
+			*eIPConfig.ipTableRule); err != nil {
+			return fmt.Errorf("unable to ensure EgressIP pkt mark iptables rule: %v", err)
+		}
+	} else {
+		if err := c.iptablesManager.EnsureRule(utiliptables.TableNAT, iptChainName, utiliptables.ProtocolIPv4,
+			*eIPConfig.ipTableRule); err != nil {
+			return fmt.Errorf("unable to ensure EgressIP pkt mark iptables rule: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -1553,6 +1611,11 @@ func generateIPTablesSNATRuleArg(srcIP net.IP, isIPv6 bool, infName, snatIP stri
 		srcIPFullMask = fmt.Sprintf("%s/32", srcIP.String())
 	}
 	return iptables.RuleArg{Args: []string{"-s", srcIPFullMask, "-o", infName, "-j", "SNAT", "--to-source", snatIP}}
+}
+
+func generateEIPPktMarkIPTablesSNATRuleArg(mark int, infName, snatIP string) *iptables.RuleArg {
+	markInHex := fmt.Sprintf("0x%x", mark)
+	return &iptables.RuleArg{Args: []string{"-m", "mark", "--mark", markInHex, "-o", infName, "-j", "SNAT", "--to-source", snatIP}}
 }
 
 func isEgressIPOnLink(linkIndex, ipFamily int, assignedEIPs sets.Set[string]) (bool, error) {
