@@ -25,7 +25,27 @@ Nonetheless, the work done here does not interfere with the current bandwidth Ne
 ## User-Stories/Use-Cases
 #### Story 1
 
-As a user of OVN-Kubernetes, I want to configure DSCP values for east west and north south traffic.
+As an OVN-Kubernetes user, I want to configure DSCP values for both east-west and north-south traffic.
+
+For instance, in a datacenter, pods may need to differentiate traffic between storage operations and streaming services. To achieve true end-to-end traffic differentiation, packets must be marked at the chassis where the pod is running.
+
+Using the `inherit` setting of OVS, DSCP markings are applied to the outer packet. These markings influence NIC behavior, which enforces traffic policing. Subsequently, the same markings are used by network switches in the underlay to apply additional policies.
+
+Beyond QoS, DSCP markings enable other use cases. For example, applications like gateways can treat packets differently based on these markings, offering tailored processing or forwarding behavior.
+
+This feature is not limited to QoS; it also allows for enhanced packet forwarding behavior, such as using `iptables` on a gateway to control traffic based on DSCP marks.
+
+For more details on this use case, check out [this presentation recorded at KubeCon 2024](https://youtu.be/76tfwAvDWX8?feature=shared).
+
+```text
+                                             .---------------.
++---------+                              _.-'                 `--.
+|       +-+---+    +------+   +----+    /         overlay         \
+|   Pod |eth0 +----+br-int+---|NIC |--->       over network        )
+|       +-+---+    +------+   +----+    `.        fabric         ,'
++---------+                               `--.               _.-'
+                                              `-------------'
+```
 
 #### Story 2
 
@@ -33,7 +53,8 @@ As a user of OVN-Kubernetes, I want to apply bandwidth limit (rate and burst) fo
 
 ## Proposed Solution
 
-The current EgressQoS is a namespaced-scoped feature which enables DSCP marking for the pods egress traffic heading towards dstCIDR. A namespace supports having only one EgressQoS resource named default (other EgressQoSes will be ignored).
+The current EgressQoS is a namespace-scoped feature that enables DSCP marking for pods egress traffic directed towards dstCIDR. A namespace supports only one EgressQoS resource, named default (any additional EgressQoS resources will be ignored).
+This enhancement proposes a replacement for EgressQoS.
 By introducing a new CRD `NetworkQoS`, users could specify a DSCP value for packets originating from pods on a given namespace heading to a specified Namespace Selector, Pod Selector, CIDR, Protocol and Port. This also supports metering for the packets by specifying bandwidth parameters `rate` and/or `burst`.
 The CRD will be Namespaced, with multiple resources allowed per namespace.
 The resources will be watched by ovn-k, which in turn will configure OVN's [QoS Table](https://man7.org/linux/man-pages/man5/ovn-nb.5.html#NetworkQoS_TABLE).
@@ -64,8 +85,8 @@ from this API and not just the north south traffic.
 This would be a namespace-scoped CRD:
 
 ```go
-
 import (
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -93,12 +114,13 @@ type NetworkQoS struct {
 
 // Spec defines the desired state of NetworkQoS
 type Spec struct {
-	// networkAttachmentName selects the network-attachment-definition for
-	// which the QoS Rules will be applied. The NAD can be of any type Layer-3,
-	// Layer-2 or Localnet. If not specified, the default cluster-wide network
-	// will be used.
+    // netAttachRefs points to a list of objects which could be either NAD, UDN, or Cluster UDN.
+    // In the case of NAD, the network type could be fo type Layer-3, Layer-2, or Localnet.
+    // If not specified, then the primary network of the selected Pods wil be chosen.
 	// +optional
-	NetworkAttachmentName string `json:"networkAttachmentName,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="netAttachRefs is immutable"
+	// +kubebuilder:validation:XValidation:rule="self.all(nad, nad.kind == 'NetworkAttachmentDefinition')", message="\"kind\" of netAttachRef must be \"NetworkAttachmentDefinition\""
+	NetworkAttachmentRefs []corev1.ObjectReference `json:"netAttachRefs,omitempty"`
 
 	// podSelector applies the NetworkQoS rule only to the pods in the namespace whose label
 	// matches this definition. This field is optional, and in case it is not set
@@ -117,7 +139,6 @@ type Rule struct {
 	// actually applied to a packet is undefined.
 	// +kubebuilder:validation:Maximum:=32767
 	// +kubebuilder:validation:Minimum:=0
-	// +required
 	Priority int `json:"priority"`
 
 	// dscp marking value for matching pods' traffic.
@@ -140,16 +161,8 @@ type Classifier struct {
 	// +optional
 	To []Destination `json:"to"`
 
-	// protocol (tcp, udp, sctp) that the traffic must match.
-	// +kubebuilder:validation:Pattern=^TCP|UDP|SCTP$
 	// +optional
-	Protocol string `json:"protocol"`
-
-	// port that the traffic must match
-	// +kubebuilder:validation:Minimum:=1
-	// +kubebuilder:validation:Maximum:=65535
-	// +optional
-	Port int32 `json:"port"`
+	Port Port `json:"port"`
 }
 
 // Bandwidth controls the maximum of rate traffic that can be sent
@@ -170,8 +183,24 @@ type Bandwidth struct {
 	Burst uint32 `json:"burst"`
 }
 
+// Port specifies destination protocol and port on which NetworkQoS
+// rule is applied
+type Port struct {
+	// protocol (tcp, udp, sctp) that the traffic must match.
+	// +kubebuilder:validation:Pattern=^TCP|UDP|SCTP$
+	// +optional
+	Protocol string `json:"protocol"`
+
+	// port that the traffic must match
+	// +kubebuilder:validation:Minimum:=1
+	// +kubebuilder:validation:Maximum:=65535
+	// +optional
+	Port int32 `json:"port"`
+}
+
 // Destination describes a peer to apply NetworkQoS configuration for the outgoing traffic.
 // Only certain combinations of fields are allowed.
+// +kubebuilder:validation:XValidation:rule="!(has(self.ipBlock) && (has(self.podSelector) || has(self.namespaceSelector)))",message="Can't specify both podSelector/namespaceSelector and ipBlock"
 type Destination struct {
 	// podSelector is a label selector which selects pods. This field follows standard label
 	// selector semantics; if present but empty, it selects all pods.
@@ -223,18 +252,16 @@ type NetworkQoSList struct {
 }
 ```
 
-* Ensure backward compatibility support available for `EgressQoS` API.
-
 ### Implementation Details
 
-The new controller is introduced in OVN-Kubernetes which would watch `NetworkQoS` in addition to `EgressQoS`, `Pod` and `Node` objects, which will create the relevant NetworkQoS objects and attach them to all of the node local switches in the cluster in OVN - resulting in the necessary flows to be programmed in OVS.
+The new controller is introduced in OVN-Kubernetes which would watch `NetworkQoS`, `Pod` and `Node` objects, which will create the relevant NetworkQoS objects and attach them to all of the node local switches in the cluster in OVN - resulting in the necessary flows to be programmed in OVS.
 
 In order to not create an OVN NetworkQoS object per pod in the namespace, the controller will also manage AddressSets.
 For each QoS rule specified in a given `NetworkQoS` it'll create an AddressSet, adding only the pods whose label matches the PodSelector to it, making sure that new/updated/deleted matching pods are also added/updated/deleted accordingly. Rules that do not have a PodSelector will leverage the namespace's AddressSet.
 
 Similarly when `NetworkQoS` is created for Pods secondary network, OVNK must create a new AddressSet for every QoS rule. When no pod selector is specified, then it must contain all of the pod's IP addresses that belong to the namespace and selected network. If only a set of pods are chosen via podSelector, then it must have IP addresses only for chosen pod(s).
 
-For example, using LGW mode and assuming there's a single node `node1` and the following `NetworkQoS` is created:
+For example, assuming there's a single node `node1` and the following `NetworkQoS` is created:
 
 ```yaml
 kind: NetworkQoS
@@ -356,7 +383,7 @@ will be executed.
 In addition it'll watch nodes to decide if further updates are needed, for example:
 when another node `node2` joins the cluster, the controller will attach the existing `NetworkQoS` object to its node local switch.
 
-The `NetworkQoS` is supported on pod's secondary networks. Consider the following example:
+The `NetworkQoS` is supported on pod's secondary networks. That may also be a User Defined Network. Consider the following example:
 
 ```yaml
 kind: NetworkQoS
@@ -365,7 +392,10 @@ metadata:
   name: qos-external-bar
   namespace: default
 spec:
-  networkAttachmentName: default/ovn-stream
+  netAttachRefs:
+  - kind: NetworkAttachmentDefinition
+    namespace: default
+    name: ovn-storage
   egress:
   - priority: 100
     dscp: 30
@@ -374,7 +404,7 @@ spec:
       - ipBlock:
           cidr: 0.0.0.0/0
 ```
-This creates a new AddressSet adding default namespace pod(s) IP associated with ovn-stream secondary network.
+This creates a new AddressSet adding default namespace pod(s) IP associated with ovn-stream secondary network, using NAD.
 the equivalent of:
 ```bash
 ovn-nbctl qos-add node1 to-lport 100 "ip4.src == <default_ns_ovn-stream_network address set> && ip4.dst == 0.0.0.0/0" dscp=30
