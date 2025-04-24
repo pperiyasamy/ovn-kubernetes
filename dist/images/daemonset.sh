@@ -650,6 +650,7 @@ ovn_image=${ovnkube_image} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_observ_enable=${ovn_observ_enable} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
+  enable_ipsec=${enable_ipsec} \
   ovnkube_app_name=ovnkube-node \
   jinjanate ../templates/ovnkube-node.yaml.j2 -o ${output_dir}/ovnkube-node.yaml
 
@@ -705,6 +706,7 @@ ovn_image=${ovnkube_image} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_observ_enable=${ovn_observ_enable} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
+  enable_ipsec=${enable_ipsec} \
   ovnkube_app_name=ovnkube-node-dpu \
   jinjanate ../templates/ovnkube-node.yaml.j2 -o ${output_dir}/ovnkube-node-dpu.yaml
 
@@ -748,6 +750,7 @@ ovn_image=${image} \
   ovnkube_node_mgmt_port_netdev=${ovnkube_node_mgmt_port_netdev} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
+  enable_ipsec=${enable_ipsec} \
   ovnkube_app_name=ovnkube-node-dpu-host \
   jinjanate ../templates/ovnkube-node.yaml.j2 -o ${output_dir}/ovnkube-node-dpu-host.yaml
 
@@ -1052,6 +1055,7 @@ ovn_image=${ovnkube_image} \
 
 if ${enable_ipsec}; then
   ovn_image=${image} \
+    ovn_unprivileged_mode=${ovn_unprivileged_mode} \
     jinjanate ../templates/ovn-ipsec.yaml.j2 -o ${output_dir}/ovn-ipsec.yaml
 fi
 
