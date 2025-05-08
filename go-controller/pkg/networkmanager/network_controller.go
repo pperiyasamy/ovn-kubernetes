@@ -283,13 +283,13 @@ func (c *networkController) syncNetwork(network string) error {
 			return fmt.Errorf("error retrieving node %s object while syncing network %s: %v",
 				c.node, network, err)
 		}
-		_, err = util.ParseNodeHostSubnetAnnotation(node, network)
-		if err != nil && util.IsAnnotationNotSetError(err) {
-			klog.Errorf("The k8s.ovn.org/node-subnets annotation is not set on node %s for network %s, so skip syncing network",
-				node.Name, network)
+		exists, err := util.NetworkExistsInNoSubnetAnnotation(node.Annotations, network)
+		if exists {
+			klog.Errorf("Host subnet is not allocated for the network %s on node %s", network, node.Name)
 			return nil
-		} else if err != nil {
-			return fmt.Errorf("error parsing k8s.ovn.org/node-subnets annotation on node %s while syncing network %s: %w",
+		}
+		if err != nil {
+			return fmt.Errorf("error parsing k8s.ovn.org/networks-no-subnet annotation on node %s while syncing network %s: %w",
 				c.node, network, err)
 		}
 	}

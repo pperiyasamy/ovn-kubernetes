@@ -7,6 +7,7 @@ import (
 	"net"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
@@ -36,7 +37,8 @@ import (
 
 const (
 	// OvnNodeSubnets is the constant string representing the node subnets annotation key
-	OvnNodeSubnets = "k8s.ovn.org/node-subnets"
+	OvnNodeSubnets          = "k8s.ovn.org/node-subnets"
+	OvnNodeNetworksNoSubnet = "k8s.ovn.org/no-subnets"
 )
 
 // updateSubnetAnnotation add the hostSubnets of the given network to the input node annotations;
@@ -273,4 +275,67 @@ func ParseNodesHostSubnetAnnotation(nodes []*corev1.Node, netName string) ([]*ne
 // for all the networks
 func ParseNodeHostSubnetsAnnotation(node *corev1.Node) (map[string][]*net.IPNet, error) {
 	return parseSubnetAnnotation(node.Annotations, OvnNodeSubnets)
+}
+
+func UpdateNoSubnetToAllocateAnnotationForNetwork(annotations map[string]string, networkName string) error {
+	networks, err := parseNetworksWithNoSubnetAnnotation(annotations)
+	if err != nil {
+		if !IsAnnotationNotSetError(err) {
+			return fmt.Errorf("failed to parse networks-no-subnet annotation %q: %v",
+				annotations, err)
+		}
+		networks = sets.New(networkName)
+	}
+	networks.Insert(networkName)
+	bytes, err := json.Marshal(sets.List(networks))
+	if err != nil {
+		return err
+	}
+	annotations[OvnNodeNetworksNoSubnet] = string(bytes)
+	return nil
+}
+
+func DeleteNetworkFromNoSubnetToAllocateAnnotation(nodeAnnotator kube.Annotator, annotations map[string]string,
+	networkName string) error {
+	networks, err := parseNetworksWithNoSubnetAnnotation(annotations)
+	if err != nil && IsAnnotationNotSetError(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to parse networks-no-subnet annotation %q: %v",
+			annotations, err)
+	}
+	networks.Delete(networkName)
+	if networks.Len() == 0 {
+		nodeAnnotator.Delete(OvnNodeNetworksNoSubnet)
+		return nil
+	}
+	return nodeAnnotator.Set(OvnNodeNetworksNoSubnet, sets.List(networks))
+}
+
+func NetworkExistsInNoSubnetAnnotation(annotations map[string]string, networkName string) (bool, error) {
+	networks, err := parseNetworksWithNoSubnetAnnotation(annotations)
+	if err != nil && IsAnnotationNotSetError(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to parse networks-no-subnet annotation %q: %v",
+			annotations, err)
+	}
+	return networks.Has(networkName), nil
+}
+
+func parseNetworksWithNoSubnetAnnotation(annotations map[string]string) (sets.Set[string], error) {
+	networksNoHostSubnetAnnotation, ok := annotations[OvnNodeNetworksNoSubnet]
+	if !ok {
+		return nil, newAnnotationNotSetError("could not find %q annotation", OvnNodeNetworksNoSubnet)
+	}
+
+	var networks []string
+	if err := json.Unmarshal([]byte(networksNoHostSubnetAnnotation), &networks); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal networks-no-subnet annotation %s: %v",
+			networksNoHostSubnetAnnotation, err)
+	}
+
+	return sets.New(networks...), nil
 }
