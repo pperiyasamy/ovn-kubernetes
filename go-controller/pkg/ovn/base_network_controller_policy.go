@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
@@ -162,10 +161,8 @@ type networkPolicy struct {
 
 	// network policy owns only 1 local pod handler
 	localPodHandler *factory.Handler
-	// peer namespace handlers
-	nsHandlerList []*factory.Handler
 	// peer namespace reconcilers
-	reconcilePeerNamespaces []*reconcilePeerNamespaces
+	reconcilePeerNamespaces []*peerNamespacesRetry
 	// peerAddressSets stores PodSelectorAddressSet keys for peers that this network policy was successfully added to.
 	// Required for cleanup.
 	peerAddressSets []string
@@ -190,9 +187,9 @@ type networkPolicy struct {
 	cancelableContext *util.CancelableContext
 }
 
-type reconcilePeerNamespaces struct {
-	retryNamespaces   *retry.RetryFramework
-	namespaceSelector *metav1.LabelSelector
+type peerNamespacesRetry struct {
+	retryFramework *retry.RetryFramework
+	handler        *factory.Handler
 }
 
 func NewNetworkPolicy(policy *knet.NetworkPolicy) *networkPolicy {
@@ -204,8 +201,7 @@ func NewNetworkPolicy(policy *knet.NetworkPolicy) *networkPolicy {
 		egressPolicies:          make([]*gressPolicy, 0),
 		isIngress:               policyTypeIngress,
 		isEgress:                policyTypeEgress,
-		nsHandlerList:           make([]*factory.Handler, 0),
-		reconcilePeerNamespaces: make([]*reconcilePeerNamespaces, 0),
+		reconcilePeerNamespaces: make([]*peerNamespacesRetry, 0),
 		localPods:               sync.Map{},
 	}
 	return np
@@ -1523,19 +1519,12 @@ func (bnc *BaseNetworkController) requeuePeerNamespaces(namespaces []string) err
 							ns, npKey, bnc.GetNetworkName(), err))
 						continue
 					}
-					namespaceLabels := labels.Set(namespace.Labels)
-					peerNamespaceSelector, err := metav1.LabelSelectorAsSelector(reconcilePeerNamespace.namespaceSelector)
-					if err != nil {
-						errors = append(errors, fmt.Errorf("failed to parse peer namespace %s selector for network policy %s on network %s: %w",
-							ns, npKey, bnc.GetNetworkName(), err))
-						continue
-					}
 					// Filter out namespace when it's labels not matching with network policy peer namespace
 					// selector.
-					if !peerNamespaceSelector.Matches(namespaceLabels) {
+					if !reconcilePeerNamespace.handler.FilterFunc(namespace) {
 						continue
 					}
-					err = reconcilePeerNamespace.retryNamespaces.AddRetryObjWithAddNoBackoff(namespace)
+					err = reconcilePeerNamespace.retryFramework.AddRetryObjWithAddNoBackoff(namespace)
 					if err != nil {
 						errors = append(errors, fmt.Errorf("failed to retry peer namespace %s for network policy %s on network %s: %w",
 							ns, npKey, bnc.GetNetworkName(), err))
@@ -1544,7 +1533,7 @@ func (bnc *BaseNetworkController) requeuePeerNamespaces(namespaces []string) err
 					namespaceAdded = true
 				}
 				if namespaceAdded {
-					reconcilePeerNamespace.retryNamespaces.RequestRetryObjs()
+					reconcilePeerNamespace.retryFramework.RequestRetryObjs()
 				}
 			}
 			return utilerrors.Join(errors...)
@@ -1589,18 +1578,17 @@ func (bnc *BaseNetworkController) addPeerNamespaceHandler(
 		klog.Errorf("WatchResource failed for addPeerNamespaceHandler: %v", err)
 		return err
 	}
-	// Add peer namespace retry framework object into np.retryPeerNamespaces list so that
-	// when a new peer namespace is newly created later under UDN network, it gets reconciled
-	// and address set is created for the namespace. so we must reconcile it for network policy
+
+	// Add peer namespace retry framework object into np.reconcilePeerNamespaces so that when
+	// a new peer namespace is newly created later under UDN network, it gets reconciled and
+	// address set is created for the namespace. so we must reconcile it for network policy
 	// as well to update gress policy ACL with matching peer namespace address set.
-	if util.IsNetworkSegmentationSupportEnabled() && bnc.IsPrimaryNetwork() {
-		np.Lock()
-		np.reconcilePeerNamespaces = append(np.reconcilePeerNamespaces,
-			&reconcilePeerNamespaces{retryNamespaces: retryPeerNamespaces,
-				namespaceSelector: namespaceSelector})
-		np.Unlock()
-	}
-	np.nsHandlerList = append(np.nsHandlerList, namespaceHandler)
+	np.Lock()
+	np.reconcilePeerNamespaces = append(np.reconcilePeerNamespaces,
+		&peerNamespacesRetry{retryFramework: retryPeerNamespaces,
+			handler: namespaceHandler})
+	np.Unlock()
+
 	return nil
 }
 
@@ -1614,11 +1602,10 @@ func (bnc *BaseNetworkController) shutdownHandlers(np *networkPolicy) {
 		bnc.watchFactory.RemovePodHandler(np.localPodHandler)
 		np.localPodHandler = nil
 	}
-	for _, handler := range np.nsHandlerList {
-		bnc.watchFactory.RemoveNamespaceHandler(handler)
+	for _, retry := range np.reconcilePeerNamespaces {
+		bnc.watchFactory.RemoveNamespaceHandler(retry.handler)
 	}
-	np.reconcilePeerNamespaces = make([]*reconcilePeerNamespaces, 0)
-	np.nsHandlerList = make([]*factory.Handler, 0)
+	np.reconcilePeerNamespaces = make([]*peerNamespacesRetry, 0)
 }
 
 // The following 2 functions should return the same key for network policy based on k8s on internal networkPolicy object
