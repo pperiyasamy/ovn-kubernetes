@@ -28,7 +28,6 @@ func (GaugeMock) Write(*io_prometheus_client.Metric) error {
 }
 
 func (GaugeMock) Describe(chan<- *prometheus.Desc) {
-	panic("unimplemented")
 }
 
 func (GaugeMock) Collect(chan<- prometheus.Metric) {
