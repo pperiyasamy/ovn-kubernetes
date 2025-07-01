@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	corev1 "k8s.io/api/core/v1"
 	kapimtypes "k8s.io/apimachinery/pkg/types"
@@ -28,10 +31,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/vswitchd"
-)
-
-const (
-	ipSecTunnelStatusQueryWaitTime = 10 * time.Second
 )
 
 // metricNbE2eTimestamp is the UNIX timestamp value set to NB DB. Northd will eventually copy this
@@ -259,13 +258,12 @@ var metricIPsecEnabled = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help:      "Specifies whether IPSec is enabled for this cluster(1) or not enabled for this cluster(0)",
 })
 
-var metricIPsecTunnelState GaugeVecInterface = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+var metricIPsecTunnelState = prometheus.NewGauge(prometheus.GaugeOpts{
 	Namespace: types.MetricOvnkubeNamespace,
 	Subsystem: types.MetricOvnkubeSubsystemController,
 	Name:      "ipsec_tunnel_state",
-	Help:      "Specifies whether IPSec Child SA is established for the Geneve tunnel(1) or not(0)"},
-	[]string{"remote_ip"},
-)
+	Help:      "Specifies whether IPSec Child SAs are established for the Geneve tunnels(1) or not(0)",
+})
 
 var metricEgressRoutingViaHost = prometheus.NewGauge(prometheus.GaugeOpts{
 	Namespace: types.MetricOvnkubeNamespace,
@@ -601,14 +599,6 @@ func UpdateEgressFirewallRuleCount(count float64) {
 	metricEgressFirewallRuleCount.Add(count)
 }
 
-func RecordIPsecTunnelStateUpEvent(remoteIP string) {
-	metricIPsecTunnelState.WithLabelValues(remoteIP).Set(1)
-}
-
-func RecordIPsecTunnelStateDownEvent(remoteIP string) {
-	metricIPsecTunnelState.WithLabelValues(remoteIP).Set(0)
-}
-
 // RecordEgressRoutingViaHost records the egress gateway mode of the cluster
 // The values are:
 // 0: If it is shared gateway mode
@@ -657,54 +647,104 @@ func ipsecMetricHandler(table string, model model.Model) {
 	}
 }
 
-// MontiorIPsecTunnelsState will register a labeled metric for the ipsec tunnel status. It will keep
-// checking ipsec established status for each Geneve tunnel towards other remote node for every 5s
-// and update the metric with tunnel up or down status.
-func MontiorIPsecTunnelsState(stopChan <-chan struct{}, wg *sync.WaitGroup, nbClient libovsdbclient.Client,
-	ovsVsctl ovsClient, ipsec ipsecClient) {
+// MonitorIPsecTunnelsState will register a labeled metric for the ipsec tunnel status. It will subscribe
+// to xfrm netlink events and update the metric with the tunnel up or down status.
+func MonitorIPsecTunnelsState(stopChan <-chan struct{}, wg *sync.WaitGroup, ovsVsctl ovsClient, ipsec ipsecClient) {
 	prometheus.MustRegister(metricIPsecTunnelState)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		groups, err := xfrmMcastGroups([]nl.XfrmMsgType{nl.XFRM_MSG_NEWSA, nl.XFRM_MSG_DELSA, nl.XFRM_MSG_UPDSA,
+			nl.XFRM_MSG_NEWPOLICY, nl.XFRM_MSG_DELPOLICY, nl.XFRM_MSG_UPDPOLICY})
+		if err != nil {
+			klog.Errorf("Error creating xfrm Mcast groups, err: %v", err)
+			return
+		}
+		sock, err := nl.SubscribeAt(netns.None(), netns.None(), unix.NETLINK_XFRM, groups...)
+		if err != nil {
+			klog.Errorf("Error subscribing xfrm events, err: %v", err)
+			return
+		}
+		if stopChan != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-stopChan
+				sock.Close()
+			}()
+		}
 		for {
-			select {
-			case <-stopChan:
+			msgs, from, err := sock.Receive()
+			if err != nil {
+				klog.Infof("Error reading from netlink socket, err: %v", err)
 				return
-			default:
-				nbGlobal := &nbdb.NBGlobal{}
-				nbGlobal, err := libovsdbops.GetNBGlobal(nbClient, nbGlobal)
-				if err != nil {
-					klog.Errorf("Error in getting the NBGlobal row from Northbound db, err: %v", err)
-					return
-				}
-				if !nbGlobal.Ipsec {
-					// IPsec is not enabled, it may be enabled a bit later, so check nbdb after a while.
-					time.Sleep(ipSecTunnelStatusQueryWaitTime)
-					continue
-				}
-				geneveTunnels, err := listGeneveTunnels(ovsVsctl)
-				if err != nil {
-					klog.Errorf("Error in retrieving Geneve tunnels, err: %v", err)
-				}
-				ipsecTunnels, err := listEstablishedIPsecTunnels(ipsec)
-				if err != nil {
-					klog.Errorf("Error in retrieving established IPsec tunnels, err: %v", err)
-				}
-				for _, geneveTunnel := range geneveTunnels {
-					if geneveTunnel.AdminState == vswitchd.InterfaceAdminStateDown ||
-						geneveTunnel.OperState == vswitchd.InterfaceLinkStateDown {
-						continue
-					}
-					if ipsecTunnels.Has(fmt.Sprintf("%s-in-1", geneveTunnel.Name)) && ipsecTunnels.Has(fmt.Sprintf("%s-out-1", geneveTunnel.Name)) {
-						RecordIPsecTunnelStateUpEvent(geneveTunnel.RemoteIP)
-					} else {
-						RecordIPsecTunnelStateDownEvent(geneveTunnel.RemoteIP)
-					}
-				}
 			}
-			time.Sleep(ipSecTunnelStatusQueryWaitTime)
+			if from.Pid != nl.PidKernel {
+				klog.Warningf("Wrong Xfrm events sender portid %d, expected %d", from.Pid, nl.PidKernel)
+				return
+			}
+			// There is xfrm state or policy change, it will happen only when IPsec is enabled
+			// in the OVN. so check IKE Child SA status for each Geneve tunnel and update ipsec
+			// tunnel state metric.
+			if len(msgs) > 0 {
+				updateIPsecTunnelStateMetric(ovsVsctl, ipsec)
+			}
 		}
 	}()
+}
+
+func xfrmMcastGroups(types []nl.XfrmMsgType) ([]uint, error) {
+	groups := make([]uint, 0)
+	if len(types) == 0 {
+		return nil, fmt.Errorf("no xfrm msg type specified")
+	}
+	for _, t := range types {
+		var group uint
+		switch t {
+		case nl.XFRM_MSG_ACQUIRE:
+			group = nl.XFRMNLGRP_ACQUIRE
+		case nl.XFRM_MSG_EXPIRE:
+			group = nl.XFRMNLGRP_EXPIRE
+		case nl.XFRM_MSG_NEWSA, nl.XFRM_MSG_DELSA, nl.XFRM_MSG_UPDSA:
+			group = nl.XFRMNLGRP_SA
+		case nl.XFRM_MSG_NEWPOLICY, nl.XFRM_MSG_DELPOLICY, nl.XFRM_MSG_UPDPOLICY:
+			group = nl.XFRMNLGRP_POLICY
+		default:
+			return nil, fmt.Errorf("unsupported xfrm group: %x", t)
+		}
+		groups = append(groups, group)
+	}
+	return groups, nil
+}
+
+func updateIPsecTunnelStateMetric(ovsVsctl ovsClient, ipsec ipsecClient) {
+	geneveTunnels, err := listGeneveTunnels(ovsVsctl)
+	if err != nil {
+		klog.Errorf("Error in retrieving Geneve tunnels, err: %v", err)
+		return
+	}
+	ipsecTunnels, err := listEstablishedIPsecTunnels(ipsec)
+	if err != nil {
+		klog.Errorf("Error in retrieving established IPsec tunnels, err: %v", err)
+	}
+	ipsecEstablished := true
+	for _, geneveTunnel := range geneveTunnels {
+		if geneveTunnel.AdminState == vswitchd.InterfaceAdminStateDown ||
+			geneveTunnel.OperState == vswitchd.InterfaceLinkStateDown {
+			ipsecEstablished = false
+			break
+		}
+		if !ipsecTunnels.Has(fmt.Sprintf("%s-in-1", geneveTunnel.Name)) ||
+			!ipsecTunnels.Has(fmt.Sprintf("%s-out-1", geneveTunnel.Name)) {
+			ipsecEstablished = false
+			break
+		}
+	}
+	if ipsecEstablished {
+		metricIPsecTunnelState.Set(1)
+	} else {
+		metricIPsecTunnelState.Set(0)
+	}
 }
 
 // IncrementEgressFirewallCount increments the number of Egress firewalls

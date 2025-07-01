@@ -2,17 +2,15 @@ package metrics
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-
-	"github.com/ovn-org/libovsdb/client"
+	"github.com/vishvananda/netlink"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics/mocks"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
-	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 )
 
 type fakeIPsecClient struct {
@@ -45,24 +43,22 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 		remoteIP2                  = "10.89.0.4"
 		stopChan                   chan struct{}
 		wg                         *sync.WaitGroup
-		nbClient                   client.Client
-		mockIPsecTunnelStateMetric *mocks.GaugeVecMock
+		mockIPsecTunnelStateMetric *mocks.GaugeMock
 	)
 
 	ginkgo.BeforeEach(func() {
 		stopChan = make(chan struct{})
 		wg = &sync.WaitGroup{}
-		var err error
-		nbClient, _, _, err = libovsdbtest.NewNBSBTestHarness(libovsdbtest.TestSetup{
-			NBData: []libovsdbtest.TestData{&nbdb.NBGlobal{Ipsec: true}}})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		mockIPsecTunnelStateMetric = mocks.NewGaugeVecMock()
+		mockIPsecTunnelStateMetric = mocks.NewGaugeMock()
 		metricIPsecTunnelState = mockIPsecTunnelStateMetric
 	})
 
 	ginkgo.AfterEach(func() {
+		ginkgo.By("clean up resources for the test")
 		close(stopChan)
 		wg.Wait()
+		err := netlink.XfrmStateDel(getBaseState())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	})
 
 	ginkgo.Context("Tunnel state", func() {
@@ -88,21 +84,13 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 				err:    nil,
 			}
 			ipsec := NewFakeIPsecClient(ipsecCmdOutput)
-			MontiorIPsecTunnelsState(stopChan, wg, nbClient, ovsVsctl.FakeCall, ipsec.FakeCall)
-			gomega.Eventually(func() (bool, error) {
-				state, err := mockIPsecTunnelStateMetric.GetValue(remoteIP1)
-				if err != nil {
-					return false, err
-				}
-				if state == 0 {
-					return false, nil
-				}
-				state, err = mockIPsecTunnelStateMetric.GetValue(remoteIP2)
-				if err != nil {
-					return false, err
-				}
-				return state == 1, nil
-			}).WithTimeout(10 * time.Second).Should(gomega.BeTrue())
+			MonitorIPsecTunnelsState(stopChan, wg, ovsVsctl.FakeCall, ipsec.FakeCall)
+			time.Sleep(2 * time.Second) // Allow some time for the goroutine to start
+			err := netlink.XfrmStateAdd(getBaseState())
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Eventually(func() int {
+				return int(mockIPsecTunnelStateMetric.GetValue())
+			}).WithTimeout(20 * time.Second).Should(gomega.Equal(1))
 		})
 		ginkgo.It("when geneve tunnels are present with IKE Child SAs not established for a tunnel", func() {
 			ovsVsCtlCmdOutput := clientOutput{
@@ -125,21 +113,13 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 				err:    nil,
 			}
 			ipsec := NewFakeIPsecClient(ipsecCmdOutput)
-			MontiorIPsecTunnelsState(stopChan, wg, nbClient, ovsVsctl.FakeCall, ipsec.FakeCall)
-			gomega.Eventually(func() (bool, error) {
-				state, err := mockIPsecTunnelStateMetric.GetValue(remoteIP1)
-				if err != nil {
-					return false, err
-				}
-				if state == 0 {
-					return false, nil
-				}
-				state, err = mockIPsecTunnelStateMetric.GetValue(remoteIP2)
-				if err != nil {
-					return false, err
-				}
-				return state == 1, nil
-			}).WithTimeout(20 * time.Second).Should(gomega.BeFalse())
+			MonitorIPsecTunnelsState(stopChan, wg, ovsVsctl.FakeCall, ipsec.FakeCall)
+			time.Sleep(2 * time.Second) // Allow some time for the goroutine to start
+			err := netlink.XfrmStateAdd(getBaseState())
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Eventually(func() int {
+				return int(mockIPsecTunnelStateMetric.GetValue())
+			}).WithTimeout(20 * time.Second).Should(gomega.Equal(0))
 		})
 
 		ginkgo.It("check IKE Child SA establishment when geneve tunnel interface flapping scenario", func() {
@@ -156,15 +136,14 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 			ovsVsctl := NewFakeOVSClientWithSameOutput(ovsVsCtlCmdOutput)
 			ipsecCmdOutput := clientOutput{stdout: "", stderr: "", err: nil}
 			ipsec := NewFakeIPsecClient(ipsecCmdOutput)
-			MontiorIPsecTunnelsState(stopChan, wg, nbClient, ovsVsctl.FakeCall, ipsec.FakeCall)
-			gomega.Consistently(func() error {
-				_, err := mockIPsecTunnelStateMetric.GetValue(remoteIP1)
-				if err != nil {
-					return err
-				}
-				_, err = mockIPsecTunnelStateMetric.GetValue(remoteIP2)
-				return err
-			}).WithTimeout(20 * time.Second).Should(gomega.HaveOccurred())
+			MonitorIPsecTunnelsState(stopChan, wg, ovsVsctl.FakeCall, ipsec.FakeCall)
+			time.Sleep(2 * time.Second) // Allow some time for the goroutine to start
+			state := getBaseState()
+			err := netlink.XfrmStateAdd(state)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Consistently(func() int {
+				return int(mockIPsecTunnelStateMetric.GetValue())
+			}).WithTimeout(5 * time.Second).Should(gomega.Equal(0))
 			// Test correspoding IPsec tunnel metrics when one of the Geneve tunnels is down.
 			ovsVsCtlCmdOutput = clientOutput{
 				stdout: fmt.Sprintf(`{"data":[["%[1]s","up","up",["map",[["csum","true"],["key","flow"],
@@ -184,17 +163,11 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 				err:    nil,
 			}
 			ipsec.ChangeOutput(ipsecCmdOutput)
-			gomega.Eventually(func() (bool, error) {
-				state, err := mockIPsecTunnelStateMetric.GetValue(remoteIP1)
-				if err != nil {
-					return false, err
-				}
-				return state == 1, nil
-			}).WithTimeout(20 * time.Second).Should(gomega.BeTrue())
-			gomega.Consistently(func() error {
-				_, err := mockIPsecTunnelStateMetric.GetValue(remoteIP2)
-				return err
-			}).WithTimeout(20 * time.Second).Should(gomega.HaveOccurred())
+			err = netlink.XfrmStateDel(state)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Consistently(func() int {
+				return int(mockIPsecTunnelStateMetric.GetValue())
+			}).WithTimeout(5 * time.Second).Should(gomega.Equal(0))
 			// Test correspoding IPsec tunnel metrics when Geneve tunnels are up.
 			ovsVsCtlCmdOutput = clientOutput{
 				stdout: fmt.Sprintf(`{"data":[["%[1]s","up","up",["map",[["csum","true"],["key","flow"],
@@ -217,20 +190,34 @@ var _ = ginkgo.Describe("IPsec metrics", func() {
 				err:    nil,
 			}
 			ipsec.ChangeOutput(ipsecCmdOutput)
-			gomega.Eventually(func() (bool, error) {
-				state, err := mockIPsecTunnelStateMetric.GetValue(remoteIP1)
-				if err != nil {
-					return false, err
-				}
-				if state == 0 {
-					return false, nil
-				}
-				state, err = mockIPsecTunnelStateMetric.GetValue(remoteIP2)
-				if err != nil {
-					return false, err
-				}
-				return state == 1, nil
-			}).WithTimeout(20 * time.Second).Should(gomega.BeTrue())
+			err = netlink.XfrmStateAdd(state)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Eventually(func() int {
+				return int(mockIPsecTunnelStateMetric.GetValue())
+			}).WithTimeout(20 * time.Second).Should(gomega.Equal(1))
 		})
 	})
 })
+
+func getBaseState() *netlink.XfrmState {
+	return &netlink.XfrmState{
+		// Force 4 byte notation for the IPv4 addresses
+		Src:   net.ParseIP("127.0.0.1").To4(),
+		Dst:   net.ParseIP("127.0.0.2").To4(),
+		Proto: netlink.XFRM_PROTO_ESP,
+		Mode:  netlink.XFRM_MODE_TUNNEL,
+		Spi:   1,
+		Auth: &netlink.XfrmStateAlgo{
+			Name: "hmac(sha256)",
+			Key:  []byte("abcdefghijklmnopqrstuvwzyzABCDEF"),
+		},
+		Crypt: &netlink.XfrmStateAlgo{
+			Name: "cbc(aes)",
+			Key:  []byte("abcdefghijklmnopqrstuvwzyzABCDEF"),
+		},
+		Mark: &netlink.XfrmMark{
+			Value: 0x12340000,
+			Mask:  0xffff0000,
+		},
+	}
+}

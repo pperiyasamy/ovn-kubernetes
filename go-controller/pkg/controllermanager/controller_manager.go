@@ -303,7 +303,7 @@ func (cm *ControllerManager) configureMetrics(stopChan <-chan struct{}) {
 	metrics.RegisterOVNKubeControllerFunctional(stopChan)
 	metrics.RunTimestamp(stopChan, cm.sbClient, cm.nbClient)
 	metrics.MonitorIPSec(cm.nbClient)
-	metrics.MontiorIPsecTunnelsState(stopChan, cm.wg, cm.nbClient,
+	metrics.MonitorIPsecTunnelsState(stopChan, cm.wg,
 		util.RunOVSVsctl, util.RunIPsec)
 }
 
