@@ -230,6 +230,12 @@ spec:
           # Workaround for https://github.com/libreswan/libreswan/issues/373
           ulimit -n 1024
 
+          # Remove stale pluto.pid if no pluto process is running
+          if [ -f /var/run/pluto/pluto.pid ] && ! pgrep -F /var/run/pluto/pluto.pid > /dev/null 2>&1; then
+            echo "Removing stale pluto.pid"
+            rm -f /var/run/pluto/pluto.pid
+          fi
+
           /usr/libexec/ipsec/addconn --config /etc/ipsec.conf --checkconfig
           # Check kernel modules
           /usr/libexec/ipsec/_stackmanager start
