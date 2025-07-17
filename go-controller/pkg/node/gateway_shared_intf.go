@@ -1687,6 +1687,27 @@ func flowsForDefaultBridge(bridge *bridgeConfiguration, extraIPs []net.IP) ([]st
 		reassemblyFlows := generateIPFragmentReassemblyFlow(ofPortPhys)
 		dftFlows = append(dftFlows, reassemblyFlows...)
 	}
+	// table 0, packets coming from OVN UDN -> External when UDN podNetwork is advertised in SGW mode
+	if config.Gateway.Mode == config.GatewayModeShared && util.IsNetworkSegmentationSupportEnabled() && util.IsRouteAdvertisementsEnabled() {
+		for _, netConfig := range bridge.patchedNetConfigs() {
+			if netConfig.isDefaultNetwork() {
+				continue
+			}
+			if netConfig.advertised.Load() {
+				for _, nodeSubnet := range netConfig.nodeSubnets {
+					// For advertised networks, we also need to match on the advertised subnets
+					// and send the traffic from the UDN to the the physical interface
+					// Not set CT mark to the UDN's masqCTMark to ensure that the hairpin reply traffic is matched only by the dst IP in table=1
+					// Sample flow: priority=109,ip,in_port=4,dl_src=02:42:ac:12:00:04,nw_src=23.100.2.0/24 actions=output:eth0
+					ipv := getIPv(nodeSubnet)
+					dftFlows = append(dftFlows, fmt.Sprintf("cookie=%s, priority=109, in_port=%s, dl_src=%s, %s, %s_src=%s, "+
+						"actions=output:%s",
+						defaultOpenFlowCookie, netConfig.ofPortPatch, bridgeMacAddress, ipv, ipv, nodeSubnet, ofPortPhys))
+				}
+			}
+		}
+	}
+
 	if ofPortPhys != "" {
 		for _, netConfig := range bridge.patchedNetConfigs() {
 			var actions string
