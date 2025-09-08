@@ -83,7 +83,7 @@ spec:
           value: "{{ ovn_gateway_mode }}"
         - name: OVN_ROUTE_ADVERTISEMENTS_ENABLE
           value: "{{ ovn_route_advertisements_enable }}"
-        - name: ENABLE_IPSEC
+        - name: OVN_ENABLE_IPSEC
           value: "{{ enable_ipsec }}"
         - name: K8S_APISERVER
           valueFrom:
@@ -481,6 +481,8 @@ spec:
           value: "{{ ovn_network_qos_enable }}"
         - name: OVN_ENABLE_DNSNAMERESOLVER
           value: "{{ ovn_enable_dnsnameresolver }}"
+        - name: OVN_ENABLE_IPSEC
+          value: "{{ enable_ipsec }}"
 
         readinessProbe:
           exec:

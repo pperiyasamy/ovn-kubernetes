@@ -83,6 +83,8 @@ func RegisterNodeMetrics(stopChan <-chan struct{}, wg *sync.WaitGroup) error {
 		prometheus.MustRegister(metricOvnKubeNodeLogFileSize)
 		go ovnKubeLogFileSizeMetricsUpdater(metricOvnKubeNodeLogFileSize, stopChan)
 	})
-	err := MonitorIPsecTunnelsState(stopChan, wg, util.RunOVSVsctl, util.RunIPsec)
-	return err
+	if config.OVNKubernetesFeature.EnableIPsec {
+		return MonitorIPsecTunnelsState(stopChan, wg, util.RunOVSVsctl, util.RunIPsec)
+	}
+	return nil
 }
