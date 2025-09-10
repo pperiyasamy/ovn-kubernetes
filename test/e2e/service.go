@@ -1777,6 +1777,37 @@ metadata:
 		svcLoadBalancerIP, err := getServiceLoadBalancerIP(f.ClientSet, namespaceName, svcName)
 		framework.ExpectNoError(err, fmt.Sprintf("failed to get service lb ip: %s, err: %v", svcName, err))
 
+		// The ip route must be created for the load balancer service forwarding packet into
+		// the node which hosts one of the endpoint.
+		discoveryClient := f.ClientSet.DiscoveryV1()
+		endpointSlice, err := discoveryClient.EndpointSlices(namespaceName).List(context.TODO(), metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("kubernetes.io/service-name=%s", svcName),
+		})
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoints slice for service %s", svcName))
+		gomega.Expect(endpointSlice).NotTo(gomega.BeNil())
+		gomega.Expect(len(endpointSlice.Items)).To(gomega.Equal(1))
+		gomega.Expect(len(endpointSlice.Items[0].Endpoints)).To(gomega.Equal(4))
+		endPointIP := endpointSlice.Items[0].Endpoints[0].Addresses
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoint slice's %s ip address", endPointIP))
+		nodeName := *endpointSlice.Items[0].Endpoints[0].NodeName
+		nodeIP, err := getNodeIP(f.ClientSet, nodeName)
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoint's %s node ip address", nodeIP))
+		if !utilnet.IsIPv6String(svcLoadBalancerIP) {
+			ginkgo.By("Setting up external IPv4 client")
+			defer func() {
+				buildAndRunCommand(fmt.Sprintf("sudo ip route delete %s", svcLoadBalancerIP))
+			}()
+			err = buildAndRunCommand(fmt.Sprintf("sudo ip route add %s via %s", svcLoadBalancerIP, nodeIP))
+			framework.ExpectNoError(err, "failed to add route for external load balancer service")
+		} else {
+			ginkgo.By("Setting up external IPv6 client")
+			defer func() {
+				buildAndRunCommand(fmt.Sprintf("sudo ip -6 route delete %s", svcLoadBalancerIP))
+			}()
+			err = buildAndRunCommand(fmt.Sprintf("sudo ip -6 route add %s via %s", svcLoadBalancerIP, nodeIP))
+			framework.ExpectNoError(err, "failed to add route for external load balancer service")
+		}
+
 		numberOfETPRules := pokeNodeIPTableRules(backendNodeName, "OVN-KUBE-EXTERNALIP")
 		gomega.Expect(numberOfETPRules).To(gomega.Equal(5))
 
@@ -1913,6 +1944,37 @@ spec:
 		framework.ExpectNoError(err, fmt.Sprintf("failed to get service lb ip: %s, err: %v", svcName, err))
 
 		time.Sleep(time.Second * 5) // buffer to ensure all rules are created correctly
+
+		// The ip route must be created for the load balancer service forwarding packet into
+		// the node which hosts one of the endpoint.
+		discoveryClient := f.ClientSet.DiscoveryV1()
+		endpointSlice, err := discoveryClient.EndpointSlices(namespaceName).List(context.TODO(), metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("kubernetes.io/service-name=%s", svcName),
+		})
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoints slice for service %s", svcName))
+		gomega.Expect(endpointSlice).NotTo(gomega.BeNil())
+		gomega.Expect(len(endpointSlice.Items)).To(gomega.Equal(1))
+		gomega.Expect(len(endpointSlice.Items[0].Endpoints)).To(gomega.Equal(4))
+		endPointIP := endpointSlice.Items[0].Endpoints[0].Addresses
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoint slice's %s ip address", endPointIP))
+		nodeName := *endpointSlice.Items[0].Endpoints[0].NodeName
+		nodeIP, err := getNodeIP(f.ClientSet, nodeName)
+		framework.ExpectNoError(err, fmt.Sprintf("failed to get endpoint's %s node ip address", nodeIP))
+		if !utilnet.IsIPv6String(svcLoadBalancerIP) {
+			ginkgo.By("Setting up external IPv4 client")
+			defer func() {
+				buildAndRunCommand(fmt.Sprintf("sudo ip route delete %s", svcLoadBalancerIP))
+			}()
+			err = buildAndRunCommand(fmt.Sprintf("sudo ip route add %s via %s", svcLoadBalancerIP, nodeIP))
+			framework.ExpectNoError(err, "failed to add route for external load balancer service")
+		} else {
+			ginkgo.By("Setting up external IPv6 client")
+			defer func() {
+				buildAndRunCommand(fmt.Sprintf("sudo ip -6 route delete %s", svcLoadBalancerIP))
+			}()
+			err = buildAndRunCommand(fmt.Sprintf("sudo ip -6 route add %s via %s", svcLoadBalancerIP, nodeIP))
+			framework.ExpectNoError(err, "failed to add route for external load balancer service")
+		}
 
 		checkNumberOfETPRules := func(value int, pattern string) wait.ConditionFunc {
 			return func() (bool, error) {
