@@ -76,6 +76,10 @@ func (nc *UserDefinedNodeNetworkController) Start(_ context.Context) error {
 		nc.podHandler = handler
 	}
 	if util.IsNetworkSegmentationSupportEnabled() && nc.IsPrimaryNetwork() {
+		err := nc.gateway.Init()
+		if err != nil {
+			return fmt.Errorf("failed to init UDN gateway for network %s, at %s: %w", nc.GetNetworkName(), nc.name, err)
+		}
 		if err := nc.gateway.AddNetwork(); err != nil {
 			klog.Warningf("Failed to add network %s to node gateway at %s: %v. Will attempt to reconcile",
 				nc.GetNetworkName(), nc.name, err)

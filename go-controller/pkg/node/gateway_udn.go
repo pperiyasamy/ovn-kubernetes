@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,11 +24,13 @@ import (
 	"sigs.k8s.io/knftables"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/generator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iprulemanager"
 	nodenft "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/nftables"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
+	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -96,6 +100,9 @@ type UserDefinedNetworkGateway struct {
 	// save BGP state at the start of reconciliation loop run to handle it consistently throughout the run
 	isNetworkAdvertisedToDefaultVRF bool
 	isNetworkAdvertised             bool
+
+	// retry framework for nodes
+	retryNodes *ovnretry.RetryFramework
 }
 
 func NewUserDefinedNetworkGateway(netInfo util.NetInfo, node *corev1.Node, nodeLister listers.NodeLister,
@@ -152,6 +159,104 @@ func NewUserDefinedNetworkGateway(netInfo util.NetInfo, node *corev1.Node, nodeL
 		reconcile:        make(chan struct{}, 1),
 		gwInterfaceIndex: link.Attrs().Index,
 	}, nil
+}
+
+func (udng *UserDefinedNetworkGateway) Init() error {
+	syncFunc := func([]any) error {
+		return udng.syncNetwork()
+	}
+	udng.retryNodes = udng.newRetryFrameworkNodeWithParameters(factory.NodeType, syncFunc)
+	if _, err := udng.retryNodes.WatchResource(); err != nil {
+		return fmt.Errorf("UDN gateway init failed to start watching nodes: %v", err)
+	}
+	return nil
+}
+
+func (udng *UserDefinedNetworkGateway) AreResourcesEqual(objType reflect.Type, obj1, obj2 any) (bool, error) {
+	switch objType {
+	case factory.NodeType:
+		oldNode, newNode := obj1.(*corev1.Node), obj2.(*corev1.Node)
+		// For Layer2 topology, node host subnet annotations are irrelevant to the gateway programming.
+		// Skip all node updates to avoid unnecessary reconciliations.
+		if udng.TopologyType() == types.Layer2Topology {
+			return true, nil
+		}
+		// Do not handle local node add (or) delete events.
+		if (newNode != nil && newNode.Name != udng.node.Name) && oldNode == nil {
+			return true, nil
+		}
+		if (oldNode != nil && oldNode.Name != udng.node.Name) && newNode == nil {
+			return true, nil
+		}
+		// If this is an update for a non-local node, ignore it.
+		if oldNode != nil && newNode != nil && oldNode.Name != udng.node.Name && newNode.Name != udng.node.Name {
+			return true, nil
+		}
+		// Now let's compare host subnets associated with node object.
+		var old, new []*net.IPNet
+		if oldNode != nil && oldNode.Name == udng.node.Name {
+			old, _ = util.ParseNodeHostSubnetAnnotation(oldNode, udng.GetNetworkName())
+		}
+		if newNode != nil && newNode.Name == udng.node.Name {
+			new, _ = util.ParseNodeHostSubnetAnnotation(newNode, udng.GetNetworkName())
+		}
+		AreHostSubnetsSame := func(old, new []*net.IPNet) bool {
+			if old == nil && new == nil {
+				return true
+			}
+			if old == nil || new == nil {
+				return false
+			}
+			if len(old) != len(new) {
+				return false
+			}
+			if len(old) == 0 {
+				return true
+			}
+			sort.Slice(old, func(i, j int) bool {
+				return old[i].String() < old[j].String()
+			})
+			sort.Slice(new, func(i, j int) bool {
+				return new[i].String() < new[j].String()
+			})
+			for i := range old {
+				if old[i].String() != new[i].String() {
+					return false
+				}
+			}
+			return true
+		}
+		return AreHostSubnetsSame(old, new), nil
+	default:
+		return false, fmt.Errorf("no object comparison for type %s", objType)
+	}
+}
+
+func (udng *UserDefinedNetworkGateway) AddResource(objType reflect.Type, _ any, _ bool) error {
+	switch objType {
+	case factory.NodeType:
+		return udng.syncNetwork()
+	default:
+		return fmt.Errorf("no add function for object type %s", objType)
+	}
+}
+
+func (udng *UserDefinedNetworkGateway) UpdateResource(objType reflect.Type, _ any, _ any, _ bool) error {
+	switch objType {
+	case factory.NodeType:
+		return udng.syncNetwork()
+	default:
+		return fmt.Errorf("no update function for object type %s", objType)
+	}
+}
+
+func (udng *UserDefinedNetworkGateway) DeleteResource(objType reflect.Type, _ any) error {
+	switch objType {
+	case factory.NodeType:
+		return udng.DelNetwork()
+	default:
+		return fmt.Errorf("no delete function for object type %s", objType)
+	}
 }
 
 // GetUDNMarkChain returns the UDN mark chain name
