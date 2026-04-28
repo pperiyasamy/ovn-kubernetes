@@ -1240,6 +1240,7 @@ func runEVPNNetworkAndServers(
 	networkSpec *udnv1.NetworkSpec,
 	ipVRFAgnhostSubnets []string,
 	vtepSubnets []string,
+	vtepMode vtepv1.VTEPMode,
 	bgpASN int,
 	macVRFAgnhostName string,
 	macVRFNetworkName string,
@@ -1333,15 +1334,17 @@ func runEVPNNetworkAndServers(
 		}
 	}
 
-	framework.Logf("Ensuring VTEP loopback IPs on nodes")
-	err = ensureVTEPLoopbackIPs(f, ictx, vtepSubnets)
-	if err != nil {
-		return err
+	if vtepMode == vtepv1.VTEPModeUnmanaged {
+		framework.Logf("Ensuring VTEP loopback IPs on nodes")
+		err = ensureVTEPLoopbackIPs(f, ictx, vtepSubnets)
+		if err != nil {
+			return err
+		}
 	}
 
 	testVTEPName := testName + "-vtep"
 	framework.Logf("Creating VTEP CR with subnets %v", vtepSubnets)
-	err = createVTEP(f, ictx, testVTEPName, vtepSubnets, vtepv1.VTEPModeUnmanaged)
+	err = createVTEP(f, ictx, testVTEPName, vtepSubnets, vtepMode)
 	if err != nil {
 		return err
 	}
