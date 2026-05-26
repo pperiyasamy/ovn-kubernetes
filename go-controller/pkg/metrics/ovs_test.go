@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/onsi/ginkgo/v2"
@@ -24,18 +25,44 @@ type clientOutput struct {
 }
 
 type fakeOVSClient struct {
-	dataIndex int
-	data      []clientOutput
+	dataIndex   int
+	data        []clientOutput
+	mutex       sync.Mutex
+	fixedOutput bool
 }
 
 func NewFakeOVSClient(data []clientOutput) fakeOVSClient {
 	return fakeOVSClient{data: data}
 }
 
+func NewFakeOVSClientWithSameOutput(output clientOutput) fakeOVSClient {
+	return fakeOVSClient{data: []clientOutput{output}, fixedOutput: true}
+}
+
 func (c *fakeOVSClient) FakeCall(...string) (string, string, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.fixedOutput {
+		if len(c.data) == 0 {
+			return "", "", fmt.Errorf("fixed output mode enabled but no fake output configured")
+		}
+		return c.data[0].stdout, c.data[0].stderr, c.data[0].err
+	}
+	if c.dataIndex >= len(c.data) {
+		return "", "", fmt.Errorf("no fake output configured for call index %d", c.dataIndex)
+	}
 	output := c.data[c.dataIndex]
 	c.dataIndex++
 	return output.stdout, output.stderr, output.err
+}
+
+func (c *fakeOVSClient) ChangeOutput(newOutput clientOutput) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if !c.fixedOutput {
+		return
+	}
+	c.data[0] = newOutput
 }
 
 // buildNamedUUID builds an id that can be used as a named-uuid
