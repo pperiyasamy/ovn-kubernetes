@@ -31,6 +31,7 @@ import (
 	ovnutil "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/allocators"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/deploymentconfig"
+	deploymentconfigapi "github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/deploymentconfig/api"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/feature"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/images"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider"
@@ -641,6 +642,57 @@ var _ = ginkgo.Describe("BGP: When default podNetwork is advertised", feature.Ro
 	})
 })
 
+// Helper functions for Layer3 subnet configurations
+func cudnLayer3SubnetsA() []udnv1.Layer3Subnet {
+	if deploymentconfig.Get().IsFeatureEnabled(deploymentconfigapi.FeatureL3UDNMultiSubet) {
+		return []udnv1.Layer3Subnet{{
+			CIDR:       "102.102.0.0/23",
+			HostSubnet: 24,
+		}, {
+			CIDR:       "102.104.0.0/16",
+			HostSubnet: 24,
+		}, {
+			CIDR:       "2013:100:200::0/63",
+			HostSubnet: 64,
+		}, {
+			CIDR:       "2013:100:201::0/48",
+			HostSubnet: 64,
+		}}
+	}
+	return []udnv1.Layer3Subnet{{
+		CIDR:       "102.102.0.0/16",
+		HostSubnet: 24,
+	}, {
+		CIDR:       "2013:100:200::0/60",
+		HostSubnet: 64,
+	}}
+}
+
+func cudnLayer3SubnetsB() []udnv1.Layer3Subnet {
+	if deploymentconfig.Get().IsFeatureEnabled(deploymentconfigapi.FeatureL3UDNMultiSubet) {
+		return []udnv1.Layer3Subnet{{
+			CIDR:       "103.103.0.0/23",
+			HostSubnet: 24,
+		}, {
+			CIDR:       "103.104.0.0/16",
+			HostSubnet: 24,
+		}, {
+			CIDR:       "2014:100:200::0/63",
+			HostSubnet: 64,
+		}, {
+			CIDR:       "2014:100:201::0/48",
+			HostSubnet: 64,
+		}}
+	}
+	return []udnv1.Layer3Subnet{{
+		CIDR:       "103.103.0.0/16",
+		HostSubnet: 24,
+	}, {
+		CIDR:       "2014:100:200::0/60",
+		HostSubnet: 64,
+	}}
+}
+
 var _ = ginkgo.Describe("BGP: Pod to external server when CUDN network is advertised", feature.RouteAdvertisements, func() {
 	var serverContainerIPs []string
 	var frrContainerIPv4, frrContainerIPv6 string
@@ -963,20 +1015,8 @@ var _ = ginkgo.Describe("BGP: Pod to external server when CUDN network is advert
 					Network: udnv1.NetworkSpec{
 						Topology: udnv1.NetworkTopologyLayer3,
 						Layer3: &udnv1.Layer3Config{
-							Role: "Primary",
-							Subnets: []udnv1.Layer3Subnet{{
-								CIDR:       "103.103.0.0/23",
-								HostSubnet: 24,
-							}, {
-								CIDR:       "103.104.0.0/16",
-								HostSubnet: 24,
-							}, {
-								CIDR:       "2014:100:200::0/63",
-								HostSubnet: 64,
-							}, {
-								CIDR:       "2014:100:201::0/48",
-								HostSubnet: 64,
-							}},
+							Role:    "Primary",
+							Subnets: cudnLayer3SubnetsB(),
 						},
 					},
 				},
@@ -2050,20 +2090,8 @@ var _ = ginkgo.DescribeTableSubtree("BGP: isolation between advertised networks"
 				Network: udnv1.NetworkSpec{
 					Topology: udnv1.NetworkTopologyLayer3,
 					Layer3: &udnv1.Layer3Config{
-						Role: "Primary",
-						Subnets: []udnv1.Layer3Subnet{{
-							CIDR:       "102.102.0.0/23",
-							HostSubnet: 24,
-						}, {
-							CIDR:       "102.104.0.0/16",
-							HostSubnet: 24,
-						}, {
-							CIDR:       "2013:100:200::0/63",
-							HostSubnet: 64,
-						}, {
-							CIDR:       "2013:100:201::0/48",
-							HostSubnet: 64,
-						}},
+						Role:    "Primary",
+						Subnets: cudnLayer3SubnetsA(),
 					},
 				},
 			},
@@ -2076,20 +2104,8 @@ var _ = ginkgo.DescribeTableSubtree("BGP: isolation between advertised networks"
 				Network: udnv1.NetworkSpec{
 					Topology: udnv1.NetworkTopologyLayer3,
 					Layer3: &udnv1.Layer3Config{
-						Role: "Primary",
-						Subnets: []udnv1.Layer3Subnet{{
-							CIDR:       "103.103.0.0/23",
-							HostSubnet: 24,
-						}, {
-							CIDR:       "103.104.0.0/16",
-							HostSubnet: 24,
-						}, {
-							CIDR:       "2014:100:200::0/63",
-							HostSubnet: 64,
-						}, {
-							CIDR:       "2014:100:201::0/48",
-							HostSubnet: 64,
-						}},
+						Role:    "Primary",
+						Subnets: cudnLayer3SubnetsB(),
 					},
 				},
 			},

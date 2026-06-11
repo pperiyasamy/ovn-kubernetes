@@ -12,15 +12,12 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/deploymentconfig"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/diagnostics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/images"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/ipalloc"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/label"
 
-	deploymentkind "github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/deploymentconfig/configs/kind"
-	infraproviderkind "github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/providers/kind"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
@@ -63,12 +60,6 @@ func TestMain(m *testing.M) {
 	// Register test flags, then parse flags.
 	handleFlags()
 	ProcessTestContextAndSetupLogging()
-
-	// Set up infrastructure provider and deployment config
-	// Upstream currently uses KinD as its preferred platform infra
-	// So TestMain is expected to run only there.
-	infraprovider.Set(infraproviderkind.New())
-	deploymentconfig.Set(deploymentkind.New())
 
 	os.Exit(m.Run())
 }

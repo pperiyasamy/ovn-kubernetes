@@ -7,13 +7,13 @@ import (
 	"k8s.io/kubernetes/test/utils/image"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/deploymentconfig/api"
-	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider"
+	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/platform"
 )
 
 type kind struct{}
 
 func New() api.DeploymentConfig {
-	if !infraprovider.IsKind() {
+	if !platform.IsKind() {
 		panic("Cluster provider must be KinD type")
 	}
 	return kind{}
@@ -37,4 +37,13 @@ func (k kind) PrimaryInterfaceName() string {
 
 func (k kind) GetAgnHostContainerImage() string {
 	return image.GetE2EImage(image.Agnhost)
+}
+
+func (k kind) IsFeatureEnabled(feature api.Feature) bool {
+	switch feature {
+	case api.FeatureL3UDNMultiSubet:
+		return true
+	default:
+		return false
+	}
 }
