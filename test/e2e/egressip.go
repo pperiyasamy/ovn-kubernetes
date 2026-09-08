@@ -1811,7 +1811,7 @@ spec:
 			if err != nil {
 				framework.Failf("Error: Check the OVN DB to ensure SNATs are added for only the standby egressIP, err: %v", err)
 			}
-			if !strings.Contains(snats, egressIP3.String()) || strings.Contains(snats, egressIP1.String()) || strings.Contains(snats, egressIP2.String()) || strings.Contains(snats, egress1Node.nodeIP) {
+			if !strings.Contains(snats, egressIP3.String()) || strings.Contains(snats, egressIP1.String()) || strings.Contains(snats, egressIP2.String()) || strings.Contains(snats, "\""+egress1Node.nodeIP+"\"") {
 				framework.Failf("Step 12. Check the OVN DB to ensure SNATs are added for only the standby egressIP, failed")
 			}
 
