@@ -1653,6 +1653,11 @@ func (eIPC *egressIPClusterController) reconcileCloudPrivateIPConfig(ctx context
 		}
 		egressIP, err := eIPC.kube.GetEgressIP(egressIPName)
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				klog.Warningf("EgressIP %s not found for CloudPrivateIPConfig %s, deleting orphaned CPIC",
+					egressIPName, newCloudPrivateIPConfig.Name)
+				return eIPC.kube.DeleteCloudPrivateIPConfig(ctx, newCloudPrivateIPConfig.Name)
+			}
 			return err
 		}
 		egressIPString := cloudPrivateIPConfigNameToIPString(newCloudPrivateIPConfig.Name)

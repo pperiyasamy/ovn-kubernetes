@@ -4681,6 +4681,701 @@ var _ = ginkgo.Describe("OVN cluster-manager EgressIP Operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 
+		// This test validates that if an EgressIP is deleted while the cloud
+		// assignment (CPIC creation) is still in progress, the controller
+		// deletes the orphaned CPIC instead of leaving it behind.
+		ginkgo.It("should delete orphaned CloudPrivateIPConfig when EgressIP is deleted during assignment", func() {
+			app.Action = func(*cli.Context) error {
+				config.Kubernetes.PlatformType = string(ocpconfigapi.AWSPlatformType)
+				node1IPv4 := "192.168.126.12/24"
+				egressIP1 := "192.168.126.101"
+				cpicName := ipStringToCloudPrivateIPConfigName(egressIP1)
+
+				node1 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node1Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node1IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node1IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node1IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+
+				eIP := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta(egressIPName),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{egressIP1},
+					},
+				}
+
+				fakeClusterManagerOVN.start(
+					&egressipv1.EgressIPList{
+						Items: []egressipv1.EgressIP{eIP},
+					},
+					&corev1.NodeList{
+						Items: []corev1.Node{node1},
+					},
+				)
+
+				_, err := fakeClusterManagerOVN.eIPC.WatchEgressNodes()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				_, err = fakeClusterManagerOVN.eIPC.WatchEgressIP()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				_, err = fakeClusterManagerOVN.eIPC.WatchCloudPrivateIPConfig()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// Wait for the CPIC to be created on node1 by reconcileEgressIP.
+				gomega.Eventually(func() bool {
+					cpic, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					if err != nil {
+						return false
+					}
+					return cpic.Spec.Node == node1Name
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				// Delete the EgressIP while the CPIC assignment is still in
+				// progress (Assigned condition is not yet True).
+				err = fakeClusterManagerOVN.fakeClient.EgressIPClient.K8sV1().
+					EgressIPs().Delete(context.TODO(), egressIPName, metav1.DeleteOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// The orphaned CPIC should be deleted.
+				gomega.Eventually(func() bool {
+					_, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					return apierrors.IsNotFound(err)
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+
+		// This test validates that if an EgressIP was deleted while the
+		// cluster-manager was down, and the CPIC was already confirmed by the
+		// cloud (Assigned=True), the controller deletes the orphaned CPIC on
+		// restart instead of returning an error from GetEgressIP NotFound.
+		ginkgo.It("should delete orphaned CloudPrivateIPConfig when owning EgressIP no longer exists", func() {
+			app.Action = func(*cli.Context) error {
+				config.Kubernetes.PlatformType = string(ocpconfigapi.AWSPlatformType)
+				node1IPv4 := "192.168.126.12/24"
+				egressIP1 := "192.168.126.101"
+				cpicName := ipStringToCloudPrivateIPConfigName(egressIP1)
+				deletedEgressIPName := "deleted-egressip"
+
+				node1 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node1Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node1IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node1IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node1IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+
+				// Pre-existing orphaned CPIC: confirmed by cloud (Assigned=True)
+				// but its owning EgressIP no longer exists.
+				orphanedCPIC := ocpcloudnetworkapi.CloudPrivateIPConfig{
+					ObjectMeta: newCloudPrivateIPConfigMeta(egressIP1),
+					Spec:       ocpcloudnetworkapi.CloudPrivateIPConfigSpec{Node: node1Name},
+					Status: ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+						Node: node1Name,
+						Conditions: []metav1.Condition{
+							{
+								Type:   string(ocpcloudnetworkapi.Assigned),
+								Status: metav1.ConditionTrue,
+							},
+						},
+					},
+				}
+				orphanedCPIC.Annotations = map[string]string{
+					util.OVNEgressIPOwnerRefLabel: deletedEgressIPName,
+				}
+
+				// No EgressIP objects — the owning EgressIP was deleted while
+				// cluster-manager was down.
+				fakeClusterManagerOVN.start(
+					&egressipv1.EgressIPList{},
+					&ocpcloudnetworkapi.CloudPrivateIPConfigList{
+						Items: []ocpcloudnetworkapi.CloudPrivateIPConfig{orphanedCPIC},
+					},
+					&corev1.NodeList{
+						Items: []corev1.Node{node1},
+					},
+				)
+
+				_, err := fakeClusterManagerOVN.eIPC.WatchEgressNodes()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				_, err = fakeClusterManagerOVN.eIPC.WatchEgressIP()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				_, err = fakeClusterManagerOVN.eIPC.WatchCloudPrivateIPConfig()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// reconcileCloudPrivateIPConfig fires for the orphaned CPIC,
+				// finds shouldAdd=true (Assigned=True, Status.Node==Spec.Node),
+				// calls GetEgressIP → NotFound, and the fix deletes the CPIC.
+				gomega.Eventually(func() bool {
+					_, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					return apierrors.IsNotFound(err)
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+
+		// This test validates convergence after a cluster-manager restart when
+		// the CPIC was confirmed by the cloud (Assigned=True) while the
+		// cluster-manager was down. The test retries startup until the
+		// allocator picks node2 (fewer allocations), then exercises the full
+		// mismatch path: executeCloudPrivateIPConfigOps fails because the
+		// CPIC exists on node1. reconcileCloudPrivateIPConfig processes the
+		// confirmed CPIC and briefly patches EgressIP status with node1, but
+		// reconcileEgressIP detects a mismatch (cache=node2, status=node1)
+		// and moves the CPIC to node2. A second cloud confirmation on node2
+		// is then needed for the system to converge.
+		ginkgo.It("should converge EgressIP status from confirmed CPIC after cluster-manager restart", func() {
+			app.Action = func(*cli.Context) error {
+				config.Kubernetes.PlatformType = string(ocpconfigapi.AWSPlatformType)
+				node1IPv4 := "192.168.126.12/24"
+				node2IPv4 := "192.168.126.51/24"
+				egressIP1 := "192.168.126.101"
+				existingNode1EgressIP := "192.168.126.102"
+				cpicName := ipStringToCloudPrivateIPConfigName(egressIP1)
+
+				node1 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node1Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node1IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node1IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node1IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				node2 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node2Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node2IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node2IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node2IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+
+				// An existing EgressIP already assigned to node1 with status
+				// populated. This gives node1 one allocation in the allocator,
+				// so the fewest-allocations sort prefers node2 for the test
+				// EgressIP below.
+				existingEIP := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta("other-egressip"),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{existingNode1EgressIP},
+					},
+					Status: egressipv1.EgressIPStatus{
+						Items: []egressipv1.EgressIPStatusItem{
+							{Node: node1Name, EgressIP: existingNode1EgressIP},
+						},
+					},
+				}
+
+				existingCPIC := ocpcloudnetworkapi.CloudPrivateIPConfig{
+					ObjectMeta: newCloudPrivateIPConfigMeta(existingNode1EgressIP),
+					Spec:       ocpcloudnetworkapi.CloudPrivateIPConfigSpec{Node: node1Name},
+					Status: ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+						Node: node1Name,
+						Conditions: []metav1.Condition{
+							{
+								Type:   string(ocpcloudnetworkapi.Assigned),
+								Status: metav1.ConditionTrue,
+							},
+						},
+					},
+				}
+				existingCPIC.Annotations = map[string]string{
+					util.OVNEgressIPOwnerRefLabel: "other-egressip",
+				}
+
+				// EgressIP with no status — simulates restart where the status
+				// was never populated (CM was down when cloud confirmed).
+				eIP := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta(egressIPName),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{egressIP1},
+					},
+				}
+
+				// CPIC confirmed by the cloud on node1 while CM was down.
+				confirmedCPIC := ocpcloudnetworkapi.CloudPrivateIPConfig{
+					ObjectMeta: newCloudPrivateIPConfigMeta(egressIP1),
+					Spec:       ocpcloudnetworkapi.CloudPrivateIPConfigSpec{Node: node1Name},
+					Status: ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+						Node: node1Name,
+						Conditions: []metav1.Condition{
+							{
+								Type:   string(ocpcloudnetworkapi.Assigned),
+								Status: metav1.ConditionTrue,
+							},
+						},
+					},
+				}
+				confirmedCPIC.Annotations = map[string]string{
+					util.OVNEgressIPOwnerRefLabel: egressIPName,
+				}
+
+				// Retry start until the allocator picks node2 for
+				// egressIPName. Node initialization order is non-deterministic,
+				// so the allocator may pick node1 if it's the only assignable
+				// node when addEgressNode runs. We need node2 to exercise the
+				// mismatch → CPIC-move → second-cloud-confirmation path.
+				for attempt := 0; ; attempt++ {
+					gomega.Expect(attempt).To(gomega.BeNumerically("<", 10), "allocator never picked node2 after 10 attempts")
+					fakeClusterManagerOVN.start(
+						&egressipv1.EgressIPList{
+							Items: []egressipv1.EgressIP{existingEIP, eIP},
+						},
+						&ocpcloudnetworkapi.CloudPrivateIPConfigList{
+							Items: []ocpcloudnetworkapi.CloudPrivateIPConfig{existingCPIC, confirmedCPIC},
+						},
+						&corev1.NodeList{
+							Items: []corev1.Node{node1, node2},
+						},
+					)
+
+					_, err := fakeClusterManagerOVN.eIPC.WatchEgressNodes()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					_, err = fakeClusterManagerOVN.eIPC.WatchEgressIP()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					_, err = fakeClusterManagerOVN.eIPC.WatchCloudPrivateIPConfig()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+					// Wait for the allocator to assign egressIP1.
+					gomega.Eventually(func() bool {
+						fakeClusterManagerOVN.eIPC.nodeAllocator.Lock()
+						defer fakeClusterManagerOVN.eIPC.nodeAllocator.Unlock()
+						for _, eNode := range fakeClusterManagerOVN.eIPC.nodeAllocator.cache {
+							if eNode.allocations[egressIP1] == egressIPName {
+								return true
+							}
+						}
+						return false
+					}, 2*time.Second).Should(gomega.BeTrue())
+
+					// Check if allocator picked node2.
+					fakeClusterManagerOVN.eIPC.nodeAllocator.Lock()
+					eNode2 := fakeClusterManagerOVN.eIPC.nodeAllocator.cache[node2Name]
+					pickedNode2 := eNode2 != nil && eNode2.allocations[egressIP1] == egressIPName
+					fakeClusterManagerOVN.eIPC.nodeAllocator.Unlock()
+
+					if pickedNode2 {
+						break
+					}
+					fakeClusterManagerOVN.shutdown()
+				}
+
+				// reconcileEgressIP picked node2 (fewer allocations) but the
+				// CPIC exists on node1, causing a transient error.
+				// reconcileCloudPrivateIPConfig processes the confirmed CPIC
+				// and briefly patches EgressIP status with node1, but
+				// reconcileEgressIP detects a mismatch (cache=node2,
+				// status=node1) and moves the CPIC to node2 by updating
+				// Spec.Node. Wait for the CPIC to be moved.
+				gomega.Eventually(func() string {
+					cpic, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					if err != nil {
+						return ""
+					}
+					return cpic.Spec.Node
+				}, 5*time.Second).Should(gomega.Equal(node2Name))
+
+				// Simulate the cloud-network-config-controller confirming the
+				// CPIC on node2 (the allocator's preferred node).
+				cpic, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				cpic.Status = ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+					Node: node2Name,
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(ocpcloudnetworkapi.Assigned),
+							Status: metav1.ConditionTrue,
+						},
+					},
+				}
+				_, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().UpdateStatus(context.TODO(), cpic, metav1.UpdateOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// reconcileCloudPrivateIPConfig fires (status changed),
+				// shouldAdd=true (Status.Node==Spec.Node==node2, Assigned=True),
+				// patches EgressIP status with node2. The system converges.
+				gomega.Eventually(func() bool {
+					eIPObj, err := fakeClusterManagerOVN.eIPC.kube.GetEgressIP(egressIPName)
+					if err != nil || len(eIPObj.Status.Items) != 1 {
+						return false
+					}
+					return eIPObj.Status.Items[0].Node == node2Name &&
+						eIPObj.Status.Items[0].EgressIP == egressIP1
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				// Verify the CPIC is on node2 (moved by the allocator).
+				cpic, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Expect(cpic.Spec.Node).To(gomega.Equal(node2Name))
+
+				// Verify the existing EgressIP on node1 is still intact.
+				existingEIPObj, err := fakeClusterManagerOVN.eIPC.kube.GetEgressIP("other-egressip")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Expect(existingEIPObj.Status.Items).To(gomega.HaveLen(1))
+				gomega.Expect(existingEIPObj.Status.Items[0].Node).To(gomega.Equal(node1Name))
+				gomega.Expect(existingEIPObj.Status.Items[0].EgressIP).To(gomega.Equal(existingNode1EgressIP))
+
+				// Delete the EgressIP and verify its CPIC is cleaned up.
+				err = fakeClusterManagerOVN.fakeClient.EgressIPClient.K8sV1().
+					EgressIPs().Delete(context.TODO(), egressIPName, metav1.DeleteOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				gomega.Eventually(func() bool {
+					_, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					return apierrors.IsNotFound(err)
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+
+		// This test validates convergence after a cluster-manager restart when
+		// the CPIC has NOT yet been confirmed by the cloud (no status). Same
+		// setup as the confirmed CPIC test above, but the CPIC status arrives
+		// after cluster-manager start. The test retries startup until the
+		// allocator picks node2 (fewer allocations), then exercises the full
+		// mismatch path: executeCloudPrivateIPConfigOps fails because the
+		// CPIC exists on node1. Cloud confirms on node1 →
+		// reconcileCloudPrivateIPConfig patches status with node1 →
+		// reconcileEgressIP detects mismatch (cache=node2, status=node1)
+		// and moves the CPIC to node2. A second cloud confirmation on node2
+		// is then needed for the system to converge.
+		ginkgo.It("should converge EgressIP status from unconfirmed CPIC after cluster-manager restart once cloud confirms", func() {
+			app.Action = func(*cli.Context) error {
+				config.Kubernetes.PlatformType = string(ocpconfigapi.AWSPlatformType)
+				node1IPv4 := "192.168.126.12/24"
+				node2IPv4 := "192.168.126.51/24"
+				egressIP1 := "192.168.126.101"
+				existingNode1EgressIP := "192.168.126.102"
+				cpicName := ipStringToCloudPrivateIPConfigName(egressIP1)
+
+				node1 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node1Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node1IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node1IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node1IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				node2 := corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node2Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr":            fmt.Sprintf("{\"ipv4\": \"%s\", \"ipv6\": \"%s\"}", node2IPv4, ""),
+							"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", v4NodeSubnet, v6NodeSubnet),
+							util.OVNNodeHostCIDRs:                        fmt.Sprintf("[\"%s\"]", node2IPv4),
+							"cloud.network.openshift.io/egress-ipconfig": fmt.Sprintf(`[{"interface":"eth0","ifaddr":{"ipv4":"%s"},"capacity":{"ipv4":14,"ipv6":15}}]`, node2IPv4),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+
+				// An existing EgressIP already assigned to node1 with status
+				// populated. This gives node1 one allocation in the allocator,
+				// so the fewest-allocations sort prefers node2 for the test
+				// EgressIP below.
+				existingEIP := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta("other-egressip"),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{existingNode1EgressIP},
+					},
+					Status: egressipv1.EgressIPStatus{
+						Items: []egressipv1.EgressIPStatusItem{
+							{Node: node1Name, EgressIP: existingNode1EgressIP},
+						},
+					},
+				}
+
+				existingCPIC := ocpcloudnetworkapi.CloudPrivateIPConfig{
+					ObjectMeta: newCloudPrivateIPConfigMeta(existingNode1EgressIP),
+					Spec:       ocpcloudnetworkapi.CloudPrivateIPConfigSpec{Node: node1Name},
+					Status: ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+						Node: node1Name,
+						Conditions: []metav1.Condition{
+							{
+								Type:   string(ocpcloudnetworkapi.Assigned),
+								Status: metav1.ConditionTrue,
+							},
+						},
+					},
+				}
+				existingCPIC.Annotations = map[string]string{
+					util.OVNEgressIPOwnerRefLabel: "other-egressip",
+				}
+
+				// EgressIP with no status — simulates restart where the
+				// status was never populated.
+				eIP := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta(egressIPName),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{egressIP1},
+					},
+				}
+
+				// CPIC created before restart but NOT confirmed by cloud:
+				// Spec.Node=node1 but no status (no Status.Node, no conditions).
+				unconfirmedCPIC := ocpcloudnetworkapi.CloudPrivateIPConfig{
+					ObjectMeta: newCloudPrivateIPConfigMeta(egressIP1),
+					Spec:       ocpcloudnetworkapi.CloudPrivateIPConfigSpec{Node: node1Name},
+				}
+				unconfirmedCPIC.Annotations = map[string]string{
+					util.OVNEgressIPOwnerRefLabel: egressIPName,
+				}
+
+				// Retry start until the allocator picks node2 for
+				// egressIPName. Node initialization order is non-deterministic,
+				// so the allocator may pick node1 if it's the only assignable
+				// node when addEgressNode runs. We need node2 to exercise the
+				// mismatch → CPIC-move → second-cloud-confirmation path.
+				for attempt := 0; ; attempt++ {
+					gomega.Expect(attempt).To(gomega.BeNumerically("<", 10), "allocator never picked node2 after 10 attempts")
+					fakeClusterManagerOVN.start(
+						&egressipv1.EgressIPList{
+							Items: []egressipv1.EgressIP{existingEIP, eIP},
+						},
+						&ocpcloudnetworkapi.CloudPrivateIPConfigList{
+							Items: []ocpcloudnetworkapi.CloudPrivateIPConfig{existingCPIC, unconfirmedCPIC},
+						},
+						&corev1.NodeList{
+							Items: []corev1.Node{node1, node2},
+						},
+					)
+
+					_, err := fakeClusterManagerOVN.eIPC.WatchEgressNodes()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					_, err = fakeClusterManagerOVN.eIPC.WatchEgressIP()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					_, err = fakeClusterManagerOVN.eIPC.WatchCloudPrivateIPConfig()
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+					// Wait for the allocator to assign egressIP1.
+					gomega.Eventually(func() bool {
+						fakeClusterManagerOVN.eIPC.nodeAllocator.Lock()
+						defer fakeClusterManagerOVN.eIPC.nodeAllocator.Unlock()
+						for _, eNode := range fakeClusterManagerOVN.eIPC.nodeAllocator.cache {
+							if eNode.allocations[egressIP1] == egressIPName {
+								return true
+							}
+						}
+						return false
+					}, 2*time.Second).Should(gomega.BeTrue())
+
+					// Check if allocator picked node2.
+					fakeClusterManagerOVN.eIPC.nodeAllocator.Lock()
+					eNode2 := fakeClusterManagerOVN.eIPC.nodeAllocator.cache[node2Name]
+					pickedNode2 := eNode2 != nil && eNode2.allocations[egressIP1] == egressIPName
+					fakeClusterManagerOVN.eIPC.nodeAllocator.Unlock()
+
+					if pickedNode2 {
+						break
+					}
+					fakeClusterManagerOVN.shutdown()
+				}
+
+				// reconcileEgressIP picked node2 (fewer allocations) but the
+				// CPIC exists with Spec.Node=node1, causing a transient error.
+				// reconcileCloudPrivateIPConfig can't process the unconfirmed
+				// CPIC (shouldAdd=false: Status.Node != Spec.Node), so the
+				// EgressIP status stays empty.
+				gomega.Consistently(func() bool {
+					eIPObj, err := fakeClusterManagerOVN.eIPC.kube.GetEgressIP(egressIPName)
+					if err != nil {
+						return false
+					}
+					return len(eIPObj.Status.Items) == 0
+				}, 1*time.Second).Should(gomega.BeTrue())
+
+				// Simulate the cloud-network-config-controller confirming the
+				// CPIC by updating its status to Assigned=True, Status.Node=node1.
+				cpic, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				cpic.Status = ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+					Node: node1Name,
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(ocpcloudnetworkapi.Assigned),
+							Status: metav1.ConditionTrue,
+						},
+					},
+				}
+				_, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().UpdateStatus(context.TODO(), cpic, metav1.UpdateOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// reconcileCloudPrivateIPConfig patches status with node1, but
+				// reconcileEgressIP detects an allocator mismatch (cache=node2,
+				// status=node1) and moves the CPIC to node2 by updating
+				// Spec.Node. Wait for the CPIC to be moved.
+				gomega.Eventually(func() string {
+					cpic, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					if err != nil {
+						return ""
+					}
+					return cpic.Spec.Node
+				}, 5*time.Second).Should(gomega.Equal(node2Name))
+
+				// Simulate the cloud-network-config-controller confirming the
+				// CPIC on node2 (the allocator's preferred node).
+				cpic, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				cpic.Status = ocpcloudnetworkapi.CloudPrivateIPConfigStatus{
+					Node: node2Name,
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(ocpcloudnetworkapi.Assigned),
+							Status: metav1.ConditionTrue,
+						},
+					},
+				}
+				_, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().UpdateStatus(context.TODO(), cpic, metav1.UpdateOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				// reconcileCloudPrivateIPConfig fires (status changed),
+				// shouldAdd=true (Status.Node==Spec.Node==node2, Assigned=True),
+				// patches EgressIP status with node2. The system converges.
+				gomega.Eventually(func() bool {
+					eIPObj, err := fakeClusterManagerOVN.eIPC.kube.GetEgressIP(egressIPName)
+					if err != nil || len(eIPObj.Status.Items) != 1 {
+						return false
+					}
+					return eIPObj.Status.Items[0].Node == node2Name &&
+						eIPObj.Status.Items[0].EgressIP == egressIP1
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				// Verify the CPIC is on node2 (moved by the allocator).
+				cpic, err = fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+					CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Expect(cpic.Spec.Node).To(gomega.Equal(node2Name))
+
+				// Delete the EgressIP and verify its CPIC is cleaned up.
+				err = fakeClusterManagerOVN.fakeClient.EgressIPClient.K8sV1().
+					EgressIPs().Delete(context.TODO(), egressIPName, metav1.DeleteOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				gomega.Eventually(func() bool {
+					_, err := fakeClusterManagerOVN.fakeClient.CloudNetworkClient.CloudV1().
+						CloudPrivateIPConfigs().Get(context.TODO(), cpicName, metav1.GetOptions{})
+					return apierrors.IsNotFound(err)
+				}, 5*time.Second).Should(gomega.BeTrue())
+
+				// Verify the existing EgressIP on node1 is still intact after
+				// the full reconciliation cycle.
+				existingEIPObj, err := fakeClusterManagerOVN.eIPC.kube.GetEgressIP("other-egressip")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Expect(existingEIPObj.Status.Items).To(gomega.HaveLen(1))
+				gomega.Expect(existingEIPObj.Status.Items[0].Node).To(gomega.Equal(node1Name))
+				gomega.Expect(existingEIPObj.Status.Items[0].EgressIP).To(gomega.Equal(existingNode1EgressIP))
+
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+
 		// This test validates node EgressIP capacity enforcement and overflow assignment:
 		// 1. Create node1 with 5 EIP Capacity (excluding primary IP) and egress-assignable label.
 		// 2. Create node2 with 5 EIP Capacity (excluding primary IP), initially NOT egress-assignable.
